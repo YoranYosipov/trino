@@ -14,11 +14,14 @@
 package io.trino.plugin.jdbc;
 
 import com.google.common.collect.ImmutableSet;
+import dev.failsafe.Failsafe;
+import dev.failsafe.RetryPolicy;
 import io.airlift.log.Logger;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.jdbc.aggregation.ImplementCountAll;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.RewriteVariable;
+import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.plugin.jdbc.mapping.DefaultIdentifierMapping;
 import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
@@ -30,8 +33,6 @@ import io.trino.spi.type.CharType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
-import net.jodah.failsafe.Failsafe;
-import net.jodah.failsafe.RetryPolicy;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -89,16 +90,17 @@ class TestingH2JdbcClient
 
     public TestingH2JdbcClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, IdentifierMapping identifierMapping)
     {
-        super(config, "\"", connectionFactory, new DefaultQueryBuilder(), identifierMapping);
+        super(config, "\"", connectionFactory, new DefaultQueryBuilder(RemoteQueryModifier.NONE), identifierMapping, RemoteQueryModifier.NONE);
     }
 
     @Override
     public Collection<String> listSchemas(Connection connection)
     {
         // listing schemas in H2 may fail with NullPointerException when a schema is concurrently dropped
-        return Failsafe.with(new RetryPolicy<Collection<String>>()
+        return Failsafe.with(RetryPolicy.<Collection<String>>builder()
                         .withMaxAttempts(100)
-                        .onRetry(event -> log.warn(event.getLastFailure(), "Failed to list schemas, retrying")))
+                        .onRetry(event -> log.warn(event.getLastException(), "Failed to list schemas, retrying"))
+                        .build())
                 .get(() -> super.listSchemas(connection));
     }
 
@@ -215,14 +217,12 @@ class TestingH2JdbcClient
             return WriteMapping.doubleMapping("double precision", doubleWriteFunction());
         }
 
-        if (type instanceof VarcharType) {
-            VarcharType varcharType = (VarcharType) type;
+        if (type instanceof VarcharType varcharType) {
             String dataType = varcharType.isUnbounded() ? "varchar" : "varchar(" + varcharType.getBoundedLength() + ")";
             return WriteMapping.sliceMapping(dataType, varcharWriteFunction());
         }
 
-        if (type instanceof CharType) {
-            CharType charType = (CharType) type;
+        if (type instanceof CharType charType) {
             String dataType = "char(" + charType.getLength() + ")";
             return WriteMapping.sliceMapping(dataType, charWriteFunction());
         }

@@ -248,8 +248,10 @@ public class PipelinedStageExecution
     @Override
     public synchronized void cancel()
     {
-        stateMachine.transitionToCanceled();
-        getAllTasks().forEach(RemoteTask::cancel);
+        // Only send tasks a cancel command if the stage is successfully cancelled and not already failed
+        if (stateMachine.transitionToCanceled()) {
+            getAllTasks().forEach(RemoteTask::cancel);
+        }
     }
 
     @Override
@@ -346,7 +348,7 @@ public class PipelinedStageExecution
                         .findFirst()
                         .map(this::rewriteTransportFailure)
                         .map(ExecutionFailureInfo::toException)
-                        .orElse(new TrinoException(GENERIC_INTERNAL_ERROR, "A task failed for an unknown reason"));
+                        .orElseGet(() -> new TrinoException(GENERIC_INTERNAL_ERROR, "A task failed for an unknown reason"));
                 fail(failure);
                 break;
             case CANCELED:

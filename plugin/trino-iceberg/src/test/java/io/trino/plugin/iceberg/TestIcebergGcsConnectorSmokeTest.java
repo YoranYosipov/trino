@@ -57,23 +57,30 @@ public class TestIcebergGcsConnectorSmokeTest
     private static final Logger LOG = Logger.get(TestIcebergGcsConnectorSmokeTest.class);
 
     private static final FileAttribute<?> READ_ONLY_PERMISSIONS = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-r--r--"));
-    private final String schema;
     private final String gcpStorageBucket;
-    private final Path gcpCredentialsFile;
-    private final HiveHadoop hiveHadoop;
-    private final FileSystem fileSystem;
+    private final String gcpCredentialKey;
+    private final String schema;
+
+    private HiveHadoop hiveHadoop;
+    private FileSystem fileSystem;
 
     @Parameters({"testing.gcp-storage-bucket", "testing.gcp-credentials-key"})
     public TestIcebergGcsConnectorSmokeTest(String gcpStorageBucket, String gcpCredentialKey)
     {
         super(ORC);
-        this.schema = "test_iceberg_gcs_connector_smoke_test_" + randomNameSuffix();
         this.gcpStorageBucket = requireNonNull(gcpStorageBucket, "gcpStorageBucket is null");
+        this.gcpCredentialKey = requireNonNull(gcpCredentialKey, "gcpCredentialKey is null");
+        this.schema = "test_iceberg_gcs_connector_smoke_test_" + randomNameSuffix();
+    }
 
-        requireNonNull(gcpCredentialKey, "gcpCredentialKey is null");
+    @Override
+    protected QueryRunner createQueryRunner()
+            throws Exception
+    {
         InputStream jsonKey = new ByteArrayInputStream(Base64.getDecoder().decode(gcpCredentialKey));
+        Path gcpCredentialsFile;
         try {
-            this.gcpCredentialsFile = Files.createTempFile("gcp-credentials", ".json", READ_ONLY_PERMISSIONS);
+            gcpCredentialsFile = Files.createTempFile("gcp-credentials", ".json", READ_ONLY_PERMISSIONS);
             gcpCredentialsFile.toFile().deleteOnExit();
             Files.write(gcpCredentialsFile, jsonKey.readAllBytes());
 
@@ -96,7 +103,7 @@ public class TestIcebergGcsConnectorSmokeTest
             Configuration configuration = ConfigurationInstantiator.newEmptyConfiguration();
             new GoogleGcsConfigurationInitializer(gcsConfig).initializeConfiguration(configuration);
 
-            this.fileSystem = FileSystem.newInstance(new URI(schemaUrl()), configuration);
+            this.fileSystem = FileSystem.newInstance(new URI(schemaPath()), configuration);
         }
         catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -104,6 +111,22 @@ public class TestIcebergGcsConnectorSmokeTest
         catch (URISyntaxException e) {
             throw new RuntimeException(e);
         }
+
+        return IcebergQueryRunner.builder()
+                .setIcebergProperties(ImmutableMap.<String, String>builder()
+                        .put("iceberg.catalog.type", "hive_metastore")
+                        .put("hive.gcs.json-key-file-path", gcpCredentialsFile.toAbsolutePath().toString())
+                        .put("hive.metastore.uri", "thrift://" + hiveHadoop.getHiveMetastoreEndpoint())
+                        .put("iceberg.file-format", format.name())
+                        .put("iceberg.register-table-procedure.enabled", "true")
+                        .buildOrThrow())
+                .setSchemaInitializer(
+                        SchemaInitializer.builder()
+                                .withClonedTpchTables(REQUIRED_TPCH_TABLES)
+                                .withSchemaName(schema)
+                                .withSchemaProperties(ImmutableMap.of("location", "'" + schemaPath() + "'"))
+                                .build())
+                .build();
     }
 
     @AfterClass(alwaysRun = true)
@@ -111,12 +134,13 @@ public class TestIcebergGcsConnectorSmokeTest
     {
         if (fileSystem != null) {
             try {
-                fileSystem.delete(new org.apache.hadoop.fs.Path(schemaUrl()), true);
+                fileSystem.delete(new org.apache.hadoop.fs.Path(schemaPath()), true);
             }
             catch (IOException e) {
                 // The GCS bucket should be configured to expire objects automatically. Clean up issues do not need to fail the test.
-                LOG.warn(e, "Failed to clean up GCS test directory: %s", schemaUrl());
+                LOG.warn(e, "Failed to clean up GCS test directory: %s", schemaPath());
             }
+            fileSystem = null;
         }
     }
 
@@ -134,35 +158,26 @@ public class TestIcebergGcsConnectorSmokeTest
     }
 
     @Override
-    protected QueryRunner createQueryRunner()
-            throws Exception
+    protected String createSchemaSql(String schema)
     {
-        return IcebergQueryRunner.builder()
-                .setIcebergProperties(ImmutableMap.<String, String>builder()
-                        .put("iceberg.catalog.type", "hive_metastore")
-                        .put("hive.gcs.json-key-file-path", gcpCredentialsFile.toAbsolutePath().toString())
-                        .put("hive.metastore.uri", "thrift://" + hiveHadoop.getHiveMetastoreEndpoint())
-                        .put("iceberg.file-format", format.name())
-                        .put("iceberg.register-table-procedure.enabled", "true")
-                        .buildOrThrow())
-                .setSchemaInitializer(
-                        SchemaInitializer.builder()
-                                .withClonedTpchTables(REQUIRED_TPCH_TABLES)
-                                .withSchemaName(schema)
-                                .withSchemaProperties(ImmutableMap.of("location", "'" + schemaUrl() + "'"))
-                                .build())
-                .build();
+        return format("CREATE SCHEMA %1$s WITH (location = '%2$s%1$s')", schema, schemaPath());
     }
 
     @Override
-    protected String createSchemaSql(String schema)
-    {
-        return format("CREATE SCHEMA %1$s WITH (location = '%2$s%1$s')", schema, schemaUrl());
-    }
-
-    private String schemaUrl()
+    protected String schemaPath()
     {
         return format("gs://%s/%s/", gcpStorageBucket, schema);
+    }
+
+    @Override
+    protected boolean locationExists(String location)
+    {
+        try {
+            return fileSystem.exists(new org.apache.hadoop.fs.Path(location));
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     @Test
@@ -196,5 +211,16 @@ public class TestIcebergGcsConnectorSmokeTest
         return metastore
                 .getTable(schema, tableName).orElseThrow()
                 .getParameters().get("metadata_location");
+    }
+
+    @Override
+    protected void deleteDirectory(String location)
+    {
+        try {
+            fileSystem.delete(new org.apache.hadoop.fs.Path(location), true);
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 }

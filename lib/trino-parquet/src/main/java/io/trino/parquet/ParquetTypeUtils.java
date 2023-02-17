@@ -14,6 +14,7 @@
 package io.trino.parquet;
 
 import com.google.common.collect.ImmutableList;
+import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.MapType;
@@ -42,6 +43,8 @@ import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static java.lang.String.format;
 import static org.apache.parquet.io.ColumnIOUtil.columnDefinitionLevel;
 import static org.apache.parquet.io.ColumnIOUtil.columnRepetitionLevel;
 import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
@@ -283,6 +286,21 @@ public final class ParquetTypeUtils
         }
         value = value >> ((8 - length) * 8);
         return value;
+    }
+
+    public static void checkBytesFitInShortDecimal(byte[] bytes, int offset, int length, ColumnDescriptor descriptor)
+    {
+        int endOffset = offset + length;
+        // Equivalent to expectedValue = bytes[endOffset] < 0 ? -1 : 0
+        byte expectedValue = (byte) (bytes[endOffset] >> 7);
+        for (int i = offset; i < endOffset; i++) {
+            if (bytes[i] != expectedValue) {
+                throw new TrinoException(NOT_SUPPORTED, format(
+                        "Could not read unscaled value %s into a short decimal from column %s",
+                        new BigInteger(bytes, offset, length + Long.BYTES),
+                        descriptor));
+            }
+        }
     }
 
     public static byte[] paddingBigInteger(BigInteger bigInteger, int numBytes)

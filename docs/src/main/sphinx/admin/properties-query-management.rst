@@ -28,17 +28,25 @@ stages of a query. You can use the following execution policies:
   result, cluster resource utilization is initially high, but inter-stage
   dependencies typically prevent full processing and cause longer queue times
   which increases the query wall time overall.
-* ``legacy-phased`` has similar functionality to ``phased``, but can increase
-  the query wall time as it attempts to minimize the number of running stages.
 
-``query.hash-partition-count``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+``query.max-hash-partition-count``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 * **Type:** :ref:`prop-type-integer`
 * **Default value:** ``100``
-* **Session property:** ``hash_partition_count``
+* **Session property:** ``max_hash_partition_count``
 
-The number of partitions to use for processing distributed operations, such as
+The maximum number of partitions to use for processing distributed operations, such as
+joins, aggregations, partitioned window functions and others.
+
+``query.min-hash-partition-count``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** :ref:`prop-type-integer`
+* **Default value:** ``4``
+* **Session property:** ``min_hash_partition_count``
+
+The minimum number of partitions to use for processing distributed operations, such as
 joins, aggregations, partitioned window functions and others.
 
 ``query.low-memory-killer.policy``

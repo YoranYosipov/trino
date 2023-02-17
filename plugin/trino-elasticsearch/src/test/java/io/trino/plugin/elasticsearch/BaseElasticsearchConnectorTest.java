@@ -87,6 +87,16 @@ public abstract class BaseElasticsearchConnectorTest
                 catalogName);
     }
 
+    @AfterClass(alwaysRun = true)
+    public final void destroy()
+            throws IOException
+    {
+        elasticsearch.stop();
+        elasticsearch = null;
+        client.close();
+        client = null;
+    }
+
     @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
@@ -105,6 +115,7 @@ public abstract class BaseElasticsearchConnectorTest
 
             case SUPPORTS_ADD_COLUMN:
             case SUPPORTS_RENAME_COLUMN:
+            case SUPPORTS_SET_COLUMN_TYPE:
                 return false;
 
             case SUPPORTS_COMMENT_ON_TABLE:
@@ -138,14 +149,6 @@ public abstract class BaseElasticsearchConnectorTest
                 {500},
                 {1000}
         };
-    }
-
-    @AfterClass(alwaysRun = true)
-    public final void destroy()
-            throws IOException
-    {
-        elasticsearch.stop();
-        client.close();
     }
 
     @Test

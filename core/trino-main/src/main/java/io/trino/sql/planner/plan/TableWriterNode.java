@@ -193,9 +193,7 @@ public class TableWriterNode
     @JsonSubTypes({
             @JsonSubTypes.Type(value = CreateTarget.class, name = "CreateTarget"),
             @JsonSubTypes.Type(value = InsertTarget.class, name = "InsertTarget"),
-            @JsonSubTypes.Type(value = DeleteTarget.class, name = "DeleteTarget"),
             @JsonSubTypes.Type(value = MergeTarget.class, name = "MergeTarget"),
-            @JsonSubTypes.Type(value = UpdateTarget.class, name = "UpdateTarget"),
             @JsonSubTypes.Type(value = RefreshMaterializedViewTarget.class, name = "RefreshMaterializedViewTarget"),
             @JsonSubTypes.Type(value = TableExecuteTarget.class, name = "TableExecuteTarget"),
     })
@@ -812,23 +810,26 @@ public class TableWriterNode
 
     public static class MergeParadigmAndTypes
     {
-        private final RowChangeParadigm paradigm;
+        private final Optional<RowChangeParadigm> paradigm;
         private final List<Type> columnTypes;
+        private final List<String> columnNames;
         private final Type rowIdType;
 
         @JsonCreator
         public MergeParadigmAndTypes(
-                @JsonProperty("paradigm") RowChangeParadigm paradigm,
+                @JsonProperty("paradigm") Optional<RowChangeParadigm> paradigm,
                 @JsonProperty("columnTypes") List<Type> columnTypes,
+                @JsonProperty("columnNames") List<String> columnNames,
                 @JsonProperty("rowIdType") Type rowIdType)
         {
             this.paradigm = requireNonNull(paradigm, "paradigm is null");
             this.columnTypes = requireNonNull(columnTypes, "columnTypes is null");
+            this.columnNames = requireNonNull(columnNames, "columnNames is null");
             this.rowIdType = requireNonNull(rowIdType, "rowIdType is null");
         }
 
         @JsonProperty
-        public RowChangeParadigm getParadigm()
+        public Optional<RowChangeParadigm> getParadigm()
         {
             return paradigm;
         }
@@ -837,6 +838,12 @@ public class TableWriterNode
         public List<Type> getColumnTypes()
         {
             return columnTypes;
+        }
+
+        @JsonProperty
+        public List<String> getColumnNames()
+        {
+            return columnNames;
         }
 
         @JsonProperty

@@ -14,19 +14,22 @@
 package io.trino.spi.connector;
 
 import java.util.Objects;
+import java.util.StringJoiner;
+
+import static java.util.Objects.requireNonNull;
 
 public final class MaterializedViewFreshness
 {
-    private final boolean materializedViewFresh;
+    private final Freshness freshness;
 
-    public MaterializedViewFreshness(boolean materializedViewFresh)
+    public MaterializedViewFreshness(Freshness freshness)
     {
-        this.materializedViewFresh = materializedViewFresh;
+        this.freshness = requireNonNull(freshness, "freshness is null");
     }
 
-    public boolean isMaterializedViewFresh()
+    public Freshness getFreshness()
     {
-        return materializedViewFresh;
+        return freshness;
     }
 
     @Override
@@ -39,21 +42,28 @@ public final class MaterializedViewFreshness
             return false;
         }
         MaterializedViewFreshness that = (MaterializedViewFreshness) obj;
-        return Objects.equals(materializedViewFresh, that.materializedViewFresh);
+        return freshness == that.freshness;
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(materializedViewFresh);
+        return Objects.hash(freshness);
     }
 
     @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("MaterializedViewFreshness{");
-        sb.append("materializedViewFresh=").append(materializedViewFresh);
-        sb.append('}');
-        return sb.toString();
+        return new StringJoiner(", ", MaterializedViewFreshness.class.getSimpleName() + "[", "]")
+                .add("freshness=" + freshness)
+                .toString();
+    }
+
+    public enum Freshness
+    {
+        FRESH,
+        STALE,
+        UNKNOWN,
+        /**/
     }
 }

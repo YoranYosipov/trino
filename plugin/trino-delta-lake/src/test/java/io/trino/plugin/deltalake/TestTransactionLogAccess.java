@@ -56,6 +56,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.collect.Sets.union;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
@@ -198,8 +199,7 @@ public class TestTransactionLogAccess
         AddFileEntry addFileEntry = addFileEntries
                 .stream()
                 .filter(entry -> entry.getPath().equals("age=42/part-00000-b26c891a-7288-4d96-9d3b-bef648f12a34.c000.snappy.parquet"))
-                .findFirst()
-                .get();
+                .collect(onlyElement());
 
         assertThat(addFileEntry.getPartitionValues())
                 .hasSize(1)
@@ -223,8 +223,7 @@ public class TestTransactionLogAccess
         AddFileEntry addFileEntry = addFileEntries
                 .stream()
                 .filter(entry -> entry.getPath().equals("ALA=1/part-00000-20a863e0-890d-4776-8825-f9dccc8973ba.c000.snappy.parquet"))
-                .findFirst()
-                .get();
+                .collect(onlyElement());
 
         assertThat(addFileEntry.getPartitionValues())
                 .hasSize(1)
@@ -314,15 +313,15 @@ public class TestTransactionLogAccess
             assertEquals(
                     entrySet,
                     ImmutableSet.of(
-                            new CommitInfoEntry(0, 1579190200860L, "671960514434781", "michal.slizak@starburstdata.com", "WRITE",
+                            new CommitInfoEntry(11, 1579190200860L, "671960514434781", "michal.slizak@starburstdata.com", "WRITE",
                                     ImmutableMap.of("mode", "Append", "partitionBy", "[\"age\"]"), null, new CommitInfoEntry.Notebook("3040849856940931"),
-                                    "0116-154224-guppy476", 10L, "WriteSerializable", true),
-                            new CommitInfoEntry(0, 1579190206644L, "671960514434781", "michal.slizak@starburstdata.com", "WRITE",
+                                    "0116-154224-guppy476", 10L, "WriteSerializable", Optional.of(true)),
+                            new CommitInfoEntry(12, 1579190206644L, "671960514434781", "michal.slizak@starburstdata.com", "WRITE",
                                     ImmutableMap.of("mode", "Append", "partitionBy", "[\"age\"]"), null, new CommitInfoEntry.Notebook("3040849856940931"),
-                                    "0116-154224-guppy476", 11L, "WriteSerializable", true),
-                            new CommitInfoEntry(0, 1579190210571L, "671960514434781", "michal.slizak@starburstdata.com", "WRITE",
+                                    "0116-154224-guppy476", 11L, "WriteSerializable", Optional.of(true)),
+                            new CommitInfoEntry(13, 1579190210571L, "671960514434781", "michal.slizak@starburstdata.com", "WRITE",
                                     ImmutableMap.of("mode", "Append", "partitionBy", "[\"age\"]"), null, new CommitInfoEntry.Notebook("3040849856940931"),
-                                    "0116-154224-guppy476", 12L, "WriteSerializable", true)));
+                                    "0116-154224-guppy476", 12L, "WriteSerializable", Optional.of(true))));
         }
     }
 
@@ -666,8 +665,7 @@ public class TestTransactionLogAccess
 
         AddFileEntry addFileEntry = addFileEntries.stream()
                 .filter(entry -> entry.getPath().equalsIgnoreCase("part-00000-0e22455f-5650-442f-a094-e1a8b7ed2271-c000.snappy.parquet"))
-                .findFirst()
-                .get();
+                .collect(onlyElement());
 
         assertThat(addFileEntry.getStats()).isPresent();
         DeltaLakeFileStatistics fileStats = addFileEntry.getStats().get();

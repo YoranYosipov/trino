@@ -49,8 +49,10 @@ public class TestDeltaLakeDelete
         QueryRunner queryRunner = DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner(
                 DELTA_CATALOG,
                 SCHEMA,
-                ImmutableMap.of("delta.enable-non-concurrent-writes", "true"),
-                hiveMinioDataLake.getMinioAddress(),
+                ImmutableMap.of(
+                        "delta.enable-non-concurrent-writes", "true",
+                        "delta.register-table-procedure.enabled", "true"),
+                hiveMinioDataLake.getMinio().getMinioAddress(),
                 hiveMinioDataLake.getHiveHadoop());
 
         TpchTable.getTables().forEach(table ->
@@ -101,9 +103,7 @@ public class TestDeltaLakeDelete
     private void testDeleteMultiFile(String tableName, String resourcePath)
     {
         hiveMinioDataLake.copyResources(resourcePath + "/lineitem", tableName);
-        getQueryRunner().execute(format("CREATE TABLE %s (dummy int) WITH (location = '%s')",
-                tableName,
-                getLocationForTable(tableName)));
+        getQueryRunner().execute(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, tableName, getLocationForTable(tableName)));
 
         assertQuery("SELECT count(*) FROM " + tableName, "SELECT count(*) FROM lineitem");
         assertUpdate("DELETE FROM " + tableName + " WHERE partkey % 2 = 0", "SELECT count(*) FROM lineitem WHERE partkey % 2 = 0");
@@ -198,9 +198,7 @@ public class TestDeltaLakeDelete
     {
         hiveMinioDataLake.copyResources(resourcePath + "/customer", tableName);
         Set<String> originalFiles = ImmutableSet.copyOf(hiveMinioDataLake.listFiles(tableName));
-        getQueryRunner().execute(format("CREATE TABLE %s (dummy int) WITH (location = '%s')",
-                tableName,
-                getLocationForTable(tableName)));
+        getQueryRunner().execute(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, tableName, getLocationForTable(tableName)));
         assertQuery("SELECT * FROM " + tableName, "SELECT * FROM customer");
         assertUpdate("DELETE FROM " + tableName, "SELECT count(*) FROM customer");
         assertQuery("SELECT count(*) FROM " + tableName, "VALUES 0");
@@ -218,16 +216,16 @@ public class TestDeltaLakeDelete
                 4);
         assertQuery("SHOW STATS FOR " + tableName,
                 "VALUES " +
-                        "('a', null, null, 0.5, null, 1, 7)," +
-                        "('b', null, null, 0.5, null, 3, 9)," +
-                        "('c', null, null, 0.75, null, 5, 5)," +
+                        "('a', null, 2.0, 0.5, null, 1, 7)," +
+                        "('b', null, 2.0, 0.5, null, 3, 9)," +
+                        "('c', null, 1.0, 0.75, null, 5, 5)," +
                         "(null, null, null, null, 4.0, null, null)");
         assertUpdate("DELETE FROM " + tableName + " WHERE c IS NULL", 3);
         assertQuery("SHOW STATS FOR " + tableName,
                 "VALUES " +
-                        "('a', null, null, 0.0, null, 1, 1)," +
-                        "('b', null, null, 0.0, null, 3, 3)," +
-                        "('c', null, null, 0.0, null, 5, 5)," +
+                        "('a', null, 1.0, 0.0, null, 1, 1)," +
+                        "('b', null, 1.0, 0.0, null, 3, 3)," +
+                        "('c', null, 1.0, 0.0, null, 5, 5)," +
                         "(null, null, null, null, 1.0, null, null)");
     }
 

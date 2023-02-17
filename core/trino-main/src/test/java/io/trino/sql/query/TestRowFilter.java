@@ -144,6 +144,7 @@ public class TestRowFilter
     @AfterAll
     public void teardown()
     {
+        accessControl = null;
         assertions.close();
         assertions = null;
     }
@@ -625,7 +626,7 @@ public class TestRowFilter
     }
 
     /**
-     * Like {@link #testInsert()} ()} but using the MERGE statement.
+     * Like {@link #testInsert()} but using the MERGE statement.
      */
     @Test
     public void testMergeInsert()

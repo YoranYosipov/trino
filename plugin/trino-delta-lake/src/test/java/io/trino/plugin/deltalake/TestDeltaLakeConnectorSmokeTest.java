@@ -18,7 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.json.ObjectMapperProvider;
 import io.airlift.units.Duration;
-import io.trino.plugin.deltalake.transactionlog.writer.S3TransactionLogSynchronizer;
+import io.trino.plugin.deltalake.transactionlog.writer.S3NativeTransactionLogSynchronizer;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.testing.QueryRunner;
 import org.testng.annotations.DataProvider;
@@ -58,7 +58,7 @@ public class TestDeltaLakeConnectorSmokeTest
                         .put("delta.enable-non-concurrent-writes", "true")
                         .put("hive.s3.max-connections", "2")
                         .buildOrThrow(),
-                hiveMinioDataLake.getMinioAddress(),
+                hiveMinioDataLake.getMinio().getMinioAddress(),
                 hiveMinioDataLake.getHiveHadoop());
     }
 
@@ -174,7 +174,9 @@ public class TestDeltaLakeConnectorSmokeTest
     {
         String tableName = "test_schema_evolution_on_table_with_column_invariant_" + randomNameSuffix();
         hiveMinioDataLake.copyResources("databricks/invariants", tableName);
-        getQueryRunner().execute(format("CREATE TABLE %s (ignored int) WITH (location = '%s')",
+        getQueryRunner().execute(format(
+                "CALL system.register_table('%s', '%s', '%s')",
+                SCHEMA,
                 tableName,
                 getLocationForTable(bucketName, tableName)));
 
@@ -204,7 +206,7 @@ public class TestDeltaLakeConnectorSmokeTest
     {
         String lockFilePath = format("%s/00000000000000000001.json.sb-lock_blah", getLockFileDirectory(tableName));
         String lockFileContents = OBJECT_MAPPER.writeValueAsString(
-                new S3TransactionLogSynchronizer.LockFileContents("some_cluster", "some_query", Instant.now().plus(lockDuration).toEpochMilli()));
+                new S3NativeTransactionLogSynchronizer.LockFileContents("some_cluster", "some_query", Instant.now().plus(lockDuration).toEpochMilli()));
         hiveMinioDataLake.writeFile(lockFileContents.getBytes(UTF_8), lockFilePath);
         String lockUri = format("s3://%s/%s", bucketName, lockFilePath);
         assertThat(listLocks(tableName)).containsExactly(lockUri); // sanity check

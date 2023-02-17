@@ -44,6 +44,13 @@ public class TestTable
         createAndInsert(rowsToInsert);
     }
 
+    public TestTable(SqlExecutor sqlExecutor, String namePrefix)
+    {
+        this.sqlExecutor = sqlExecutor;
+        this.name = namePrefix + randomNameSuffix();
+        this.tableDefinition = null;
+    }
+
     public void createAndInsert(List<String> rowsToInsert)
     {
         sqlExecutor.execute(format("CREATE TABLE %s %s", name, tableDefinition));
@@ -121,11 +128,5 @@ public class TestTable
     public void close()
     {
         sqlExecutor.execute("DROP TABLE " + name);
-    }
-
-    @Deprecated
-    public static String randomTableSuffix()
-    {
-        return randomNameSuffix();
     }
 }

@@ -43,6 +43,7 @@ import io.trino.sql.planner.plan.PlanNodeId;
 import org.joda.time.DateTime;
 
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.GuardedBy;
 
 import java.net.URI;
 import java.util.List;
@@ -90,7 +91,9 @@ public class SqlTask
     private final AtomicReference<DateTime> lastHeartbeat = new AtomicReference<>(DateTime.now());
     private final AtomicLong taskStatusVersion = new AtomicLong(TaskStatus.STARTING_VERSION);
     private final FutureStateChange<?> taskStatusVersionChange = new FutureStateChange<>();
-
+    // Must be synchronized when updating the current task holder reference, but not when only reading the current reference value
+    private final Object taskHolderLock = new Object();
+    @GuardedBy("taskHolderLock")
     private final AtomicReference<TaskHolder> taskHolderReference = new AtomicReference<>(new TaskHolder());
     private final AtomicBoolean needsPlan = new AtomicBoolean(true);
     private final AtomicReference<String> traceToken = new AtomicReference<>();
@@ -167,19 +170,18 @@ public class SqlTask
             }
 
             // store final task info
-            while (true) {
+            synchronized (taskHolderLock) {
                 TaskHolder taskHolder = taskHolderReference.get();
                 if (taskHolder.isFinished()) {
                     // another concurrent worker already set the final state
                     return;
                 }
 
-                if (taskHolderReference.compareAndSet(taskHolder, new TaskHolder(
+                TaskHolder newHolder = new TaskHolder(
                         createTaskInfo(taskHolder),
                         taskHolder.getIoStats(),
-                        taskHolder.getDynamicFilterDomains()))) {
-                    break;
-                }
+                        taskHolder.getDynamicFilterDomains());
+                checkState(taskHolderReference.compareAndSet(taskHolder, newHolder), "unsynchronized concurrent task holder update");
             }
 
             // make sure buffers are cleaned up
@@ -276,7 +278,9 @@ public class SqlTask
         long queuedPartitionedSplitsWeight = 0L;
         int runningPartitionedDrivers = 0;
         long runningPartitionedSplitsWeight = 0L;
+        DataSize outputDataSize = DataSize.ofBytes(0);
         DataSize physicalWrittenDataSize = DataSize.ofBytes(0);
+        Optional<Integer> writerCount = Optional.empty();
         DataSize userMemoryReservation = DataSize.ofBytes(0);
         DataSize peakUserMemoryReservation = DataSize.ofBytes(0);
         DataSize revocableMemoryReservation = DataSize.ofBytes(0);
@@ -291,9 +295,11 @@ public class SqlTask
             runningPartitionedDrivers = taskStats.getRunningPartitionedDrivers();
             runningPartitionedSplitsWeight = taskStats.getRunningPartitionedSplitsWeight();
             physicalWrittenDataSize = taskStats.getPhysicalWrittenDataSize();
+            writerCount = taskStats.getMaxWriterCount();
             userMemoryReservation = taskStats.getUserMemoryReservation();
             peakUserMemoryReservation = taskStats.getPeakUserMemoryReservation();
             revocableMemoryReservation = taskStats.getRevocableMemoryReservation();
+            outputDataSize = taskStats.getOutputDataSize();
             fullGcCount = taskStats.getFullGcCount();
             fullGcTime = taskStats.getFullGcTime();
             dynamicFiltersVersion = taskHolder.getDynamicFiltersVersion();
@@ -310,9 +316,11 @@ public class SqlTask
                 physicalWrittenBytes += pipelineContext.getPhysicalWrittenDataSize();
             }
             physicalWrittenDataSize = succinctBytes(physicalWrittenBytes);
+            writerCount = taskContext.getMaxWriterCount();
             userMemoryReservation = taskContext.getMemoryReservation();
             peakUserMemoryReservation = taskContext.getPeakMemoryReservation();
             revocableMemoryReservation = taskContext.getRevocableMemoryReservation();
+            outputDataSize = DataSize.ofBytes(taskContext.getOutputDataSize().getTotalCount());
             fullGcCount = taskContext.getFullGcCount();
             fullGcTime = taskContext.getFullGcTime();
             dynamicFiltersVersion = taskContext.getDynamicFiltersVersion();
@@ -329,7 +337,9 @@ public class SqlTask
                 queuedPartitionedDrivers,
                 runningPartitionedDrivers,
                 outputBuffer.getStatus(),
+                outputDataSize,
                 physicalWrittenDataSize,
+                writerCount,
                 userMemoryReservation,
                 peakUserMemoryReservation,
                 revocableMemoryReservation,
@@ -425,42 +435,67 @@ public class SqlTask
             // a VALUES query).
             outputBuffer.setOutputBuffers(outputBuffers);
 
-            // assure the task execution is only created once
-            SqlTaskExecution taskExecution;
-            synchronized (this) {
-                // is task already complete?
-                TaskHolder taskHolder = taskHolderReference.get();
-                if (taskHolder.isFinished()) {
-                    return taskHolder.getFinalTaskInfo();
-                }
-                taskExecution = taskHolder.getTaskExecution();
-                if (taskExecution == null) {
-                    checkState(fragment.isPresent(), "fragment must be present");
-                    taskExecution = sqlTaskExecutionFactory.create(
-                            session,
-                            queryContext,
-                            taskStateMachine,
-                            outputBuffer,
-                            fragment.get(),
-                            this::notifyStatusChanged);
-                    taskHolderReference.compareAndSet(taskHolder, new TaskHolder(taskExecution));
-                    needsPlan.set(false);
-                    taskExecution.start();
-                }
+            // is task already complete?
+            TaskHolder taskHolder = taskHolderReference.get();
+            if (taskHolder.isFinished()) {
+                return taskHolder.getFinalTaskInfo();
             }
 
-            taskExecution.addSplitAssignments(splitAssignments);
-            taskExecution.getTaskContext().addDynamicFilter(dynamicFilterDomains);
+            SqlTaskExecution taskExecution = taskHolder.getTaskExecution();
+            if (taskExecution == null) {
+                checkState(fragment.isPresent(), "fragment must be present");
+                taskExecution = tryCreateSqlTaskExecution(session, fragment.get());
+            }
+            // taskExecution can still be null if the creation was skipped
+            if (taskExecution != null) {
+                taskExecution.addSplitAssignments(splitAssignments);
+                taskExecution.getTaskContext().addDynamicFilter(dynamicFilterDomains);
+            }
         }
         catch (Error e) {
             failed(e);
             throw e;
         }
         catch (RuntimeException e) {
-            failed(e);
+            return failed(e);
         }
 
         return getTaskInfo();
+    }
+
+    @Nullable
+    private SqlTaskExecution tryCreateSqlTaskExecution(Session session, PlanFragment fragment)
+    {
+        synchronized (taskHolderLock) {
+            // Recheck holder for task execution after acquiring the lock
+            TaskHolder taskHolder = taskHolderReference.get();
+            if (taskHolder.isFinished()) {
+                return null;
+            }
+            SqlTaskExecution execution = taskHolder.getTaskExecution();
+            if (execution != null) {
+                return execution;
+            }
+
+            // Don't create a new execution if the task is already done
+            if (taskStateMachine.getState().isDone()) {
+                return null;
+            }
+
+            execution = sqlTaskExecutionFactory.create(
+                    session,
+                    queryContext,
+                    taskStateMachine,
+                    outputBuffer,
+                    fragment,
+                    this::notifyStatusChanged);
+            needsPlan.set(false);
+            execution.start();
+            // this must happen after taskExecution.start(), otherwise it could become visible to a
+            // concurrent update without being fully initialized
+            checkState(taskHolderReference.compareAndSet(taskHolder, new TaskHolder(execution)), "unsynchronized concurrent task holder update");
+            return execution;
+        }
     }
 
     public ListenableFuture<BufferResult> getTaskResults(PipelinedOutputBuffers.OutputBufferId bufferId, long startingSequenceId, DataSize maxSize)

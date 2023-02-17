@@ -36,9 +36,9 @@ import io.airlift.json.JsonModule;
 import io.airlift.log.LogJmxModule;
 import io.airlift.log.Logger;
 import io.airlift.node.NodeModule;
+import io.airlift.openmetrics.JmxOpenMetricsModule;
 import io.airlift.tracetoken.TraceTokenModule;
 import io.trino.client.NodeVersion;
-import io.trino.connector.CatalogHandle;
 import io.trino.connector.CatalogManagerConfig;
 import io.trino.connector.CatalogManagerConfig.CatalogMangerKind;
 import io.trino.connector.CatalogManagerModule;
@@ -60,6 +60,7 @@ import io.trino.server.security.HeaderAuthenticatorManager;
 import io.trino.server.security.PasswordAuthenticatorManager;
 import io.trino.server.security.ServerSecurityModule;
 import io.trino.server.security.oauth2.OAuth2Client;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.transaction.TransactionManagerModule;
 import io.trino.version.EmbedVersion;
 import org.weakref.jmx.guice.MBeanModule;
@@ -107,6 +108,7 @@ public class Server
                 new PrefixObjectNameGeneratorModule("io.trino"),
                 new JmxModule(),
                 new JmxHttpModule(),
+                new JmxOpenMetricsModule(),
                 new LogJmxModule(),
                 new TraceTokenModule(),
                 new EventModule(),
@@ -181,11 +183,11 @@ public class Server
             message.append("\n");
             message.append("==========");
             log.error("%s", message);
-            System.exit(1);
+            System.exit(100);
         }
         catch (Throwable e) {
             log.error(e);
-            System.exit(1);
+            System.exit(100);
         }
     }
 

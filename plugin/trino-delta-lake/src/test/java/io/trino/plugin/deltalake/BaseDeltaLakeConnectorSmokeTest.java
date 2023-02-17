@@ -26,6 +26,8 @@ import io.trino.plugin.deltalake.transactionlog.AddFileEntry;
 import io.trino.plugin.hive.TestingHivePlugin;
 import io.trino.plugin.hive.containers.HiveHadoop;
 import io.trino.plugin.hive.containers.HiveMinioDataLake;
+import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.spi.QueryId;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.testing.BaseConnectorSmokeTest;
@@ -35,6 +37,7 @@ import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.MaterializedRow;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
+import io.trino.testing.minio.MinioClient;
 import io.trino.tpch.TpchTable;
 import org.intellij.lang.annotations.Language;
 import org.testng.SkipException;
@@ -46,7 +49,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.MoreCollectors.onlyElement;
@@ -54,8 +60,11 @@ import static com.google.common.collect.Sets.union;
 import static io.trino.SystemSessionProperties.ENABLE_DYNAMIC_FILTERING;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
+import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.EXTENDED_STATISTICS_COLLECT_ON_WRITE;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.TRANSACTION_LOG_DIRECTORY;
+import static io.trino.plugin.hive.TestingThriftHiveMetastoreBuilder.testingThriftHiveMetastoreBuilder;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.DELETE_TABLE;
+import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.DROP_TABLE;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.INSERT_TABLE;
 import static io.trino.testing.TestingAccessControlManager.privilege;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_DELETE;
@@ -111,6 +120,9 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     protected final String bucketName = "test-delta-lake-integration-smoke-test-" + randomNameSuffix();
 
     protected HiveMinioDataLake hiveMinioDataLake;
+    private HiveMetastore metastore;
+
+    protected void environmentSetup() {}
 
     protected abstract HiveMinioDataLake createHiveMinioDataLake()
             throws Exception;
@@ -118,7 +130,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     protected abstract QueryRunner createDeltaLakeQueryRunner(Map<String, String> connectorProperties)
             throws Exception;
 
-    protected abstract void createTableFromResources(String table, String resourcePath, QueryRunner queryRunner);
+    protected abstract void registerTableFromResources(String table, String resourcePath, QueryRunner queryRunner);
 
     protected abstract String getLocationForTable(String bucketName, String tableName);
 
@@ -130,13 +142,20 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
+        environmentSetup();
+
         this.hiveMinioDataLake = closeAfterClass(createHiveMinioDataLake());
+        this.metastore = new BridgingHiveMetastore(
+                testingThriftHiveMetastoreBuilder()
+                        .metastoreClient(hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint())
+                        .build());
 
         QueryRunner queryRunner = createDeltaLakeQueryRunner(
                 ImmutableMap.<String, String>builder()
                         .put("delta.metadata.cache-ttl", TEST_METADATA_CACHE_TTL_SECONDS + "s")
                         .put("delta.metadata.live-files.cache-ttl", TEST_METADATA_CACHE_TTL_SECONDS + "s")
                         .put("hive.metastore-cache-ttl", TEST_METADATA_CACHE_TTL_SECONDS + "s")
+                        .put("delta.register-table-procedure.enabled", "true")
                         .buildOrThrow());
 
         queryRunner.execute(format("CREATE SCHEMA %s WITH (location = '%s')", SCHEMA, getLocationForTable(bucketName, SCHEMA)));
@@ -164,7 +183,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
          */
         NON_TPCH_TABLES.forEach(table -> {
             String resourcePath = "databricks/" + table;
-            createTableFromResources(table, resourcePath, queryRunner);
+            registerTableFromResources(table, resourcePath, queryRunner);
         });
 
         return queryRunner;
@@ -174,6 +193,9 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
         switch (connectorBehavior) {
+            case SUPPORTS_CREATE_VIEW:
+                return true;
+
             case SUPPORTS_RENAME_SCHEMA:
                 return false;
 
@@ -260,6 +282,19 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
         assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'a', TIMESTAMP '2020-01-01 01:22:34.000 UTC')", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES (2, 'b', TIMESTAMP '2021-01-01 01:22:34.000 UTC')", 1);
         assertQuery("SELECT a, b, CAST(c AS VARCHAR) FROM " + tableName, "VALUES (1, 'a', '2020-01-01 01:22:34.000 UTC'), (2, 'b', '2021-01-01 01:22:34.000 UTC')");
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testPathUriDecoding()
+    {
+        String tableName = "test_uri_table_" + randomNameSuffix();
+        registerTableFromResources(tableName, "databricks/uri", getQueryRunner());
+
+        assertQuery("SELECT * FROM " + tableName, "VALUES ('a=equal', 1), ('a:colon', 2), ('a+plus', 3), ('a space', 4), ('a%percent', 5)");
+        String firstFilePath = (String) computeScalar("SELECT \"$path\" FROM " + tableName + " WHERE y = 1");
+        assertQuery("SELECT * FROM " + tableName + " WHERE \"$path\" = '" + firstFilePath + "'", "VALUES ('a=equal', 1)");
+
         assertUpdate("DROP TABLE " + tableName);
     }
 
@@ -397,7 +432,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
 
     private void testDropTable(String tableName, String resourcePath)
     {
-        createTableFromResources(tableName, resourcePath, getQueryRunner());
+        registerTableFromResources(tableName, resourcePath, getQueryRunner());
         assertTrue(getQueryRunner().tableExists(getSession(), tableName));
         assertUpdate("DROP TABLE " + tableName);
         assertFalse(getQueryRunner().tableExists(getSession(), tableName));
@@ -408,11 +443,11 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     public void testDropAndRecreateTable()
     {
         String tableName = "testDropAndRecreate_" + randomNameSuffix();
-        assertUpdate(format("CREATE TABLE %s (dummy int) WITH (location = '%s')", tableName, getLocationForTable(bucketName, "nation")));
+        assertUpdate(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, tableName, getLocationForTable(bucketName, "nation")));
         assertQuery("SELECT * FROM " + tableName, "SELECT * FROM nation");
 
         assertUpdate("DROP TABLE " + tableName);
-        assertUpdate(format("CREATE TABLE %s (dummy int) WITH (location = '%s')", tableName, getLocationForTable(bucketName, "customer")));
+        assertUpdate(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, tableName, getLocationForTable(bucketName, "customer")));
         assertQuery("SELECT * FROM " + tableName, "SELECT * FROM customer");
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -420,7 +455,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     @Test
     public void testDropColumnNotSupported()
     {
-        createTableFromResources("testdropcolumn", "io/trino/plugin/deltalake/testing/resources/databricks/nation", getQueryRunner());
+        registerTableFromResources("testdropcolumn", "io/trino/plugin/deltalake/testing/resources/databricks/nation", getQueryRunner());
         assertQueryFails("ALTER TABLE testdropcolumn DROP COLUMN comment", ".*This connector does not support dropping columns.*");
     }
 
@@ -481,26 +516,21 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     @Test
     public void testCreateTableAsStatistics()
     {
+        String tableName = "test_ctats_stats_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName
+                + " WITH ("
+                + "location = '" + getLocationForTable(bucketName, tableName) + "'"
+                + ")"
+                + " AS SELECT * FROM tpch.sf1.nation", 25);
+
         assertQuery(
-                "SHOW STATS FOR lineitem",
+                "SHOW STATS FOR " + tableName,
                 "VALUES " +
-                        "('orderkey', NULL, NULL, 0.0, NULL, '1', '60000')," +
-                        "('partkey', NULL, NULL, 0.0, NULL, '1', '2000')," +
-                        "('suppkey', NULL, NULL, 0.0, NULL, '1', '100')," +
-                        "('linenumber', NULL, NULL, 0.0, NULL, '1', '7')," +
-                        "('quantity', NULL, NULL, 0.0, NULL, '1.0', '50.0')," +
-                        "('extendedprice', NULL, NULL, 0.0, NULL, '904.0', '94949.5')," +
-                        "('discount', NULL, NULL, 0.0, NULL, '0.0', '0.1')," +
-                        "('tax', NULL, NULL, 0.0, NULL, '0.0', '0.08')," +
-                        "('returnflag', NULL, NULL, 0.0, NULL, NULL, NULL)," +
-                        "('linestatus', NULL, NULL, 0.0, NULL, NULL, NULL)," +
-                        "('shipdate', NULL, NULL, 0.0, NULL, '1992-01-04', '1998-11-29')," +
-                        "('commitdate', NULL, NULL, 0.0, NULL, '1992-02-02', '1998-10-28')," +
-                        "('receiptdate', NULL, NULL, 0.0, NULL, '1992-01-09', '1998-12-25')," +
-                        "('shipinstruct', NULL, NULL, 0.0, NULL, NULL, NULL)," +
-                        "('shipmode', NULL, NULL, 0.0, NULL, NULL, NULL)," +
-                        "('comment', NULL, NULL, 0.0, NULL, NULL, NULL)," +
-                        "(NULL, NULL, NULL, NULL, 60175.0, NULL, NULL)");
+                        "('nationkey', null, 25.0, 0.0, null, 0, 24)," +
+                        "('regionkey', null, 5.0, 0.0, null, 0, 4)," +
+                        "('comment', 1857.0, 25.0, 0.0, null, null, null)," +
+                        "('name', 177.0, 25.0, 0.0, null, null, null)," +
+                        "(null, null, null, null, 25.0, null, null)");
     }
 
     @Test
@@ -915,9 +945,9 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
                 "SHOW STATS FOR insert_nonlowercase_columns",
                 "VALUES " +
                         //  column_name | data_size | distinct_values_count | nulls_fraction | row_count | low_value | high_value
-                        "('lower_case_string', null, null, 0.5, null, null, null)," +
-                        "('upper_case_string', null, null, 0.5, null, null, null)," +
-                        "('mixed_case_string', null, null, 0.5, null, null, null)," +
+                        "('lower_case_string', 10.0, 1.0, 0.5, null, null, null)," +
+                        "('upper_case_string', 10.0, 1.0, 0.5, null, null, null)," +
+                        "('mixed_case_string', 10.0, 1.0, 0.5, null, null, null)," +
                         "(null, null, null, null, 8.0, null, null)");
     }
 
@@ -955,7 +985,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
                 "SHOW STATS FOR insert_nested_nonlowercase_columns",
                 "VALUES " +
                         //  column_name | data_size | distinct_values_count | nulls_fraction | row_count | low_value | high_value
-                        "('an_int', null, null, 0.0, null, 1, 40)," +
+                        "('an_int', null, 4.0, 0.0, null, 1, 40)," +
                         "('nested', null, null, null, null, null, null)," +
                         "(null, null, null, null, 8.0, null, null)");
     }
@@ -1017,8 +1047,8 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
                 "SHOW STATS FOR insert_nonlowercase_columns_partitioned",
                 "VALUES " +
                         //  column_name | data_size | distinct_values_count | nulls_fraction | row_count | low_value | high_value
-                        "('lower_case_string', null, null, 0.5, null, null, null)," +
-                        "('upper_case_string', null, null, 0.5, null, null, null)," +
+                        "('lower_case_string', 10.0, 1.0, 0.5, null, null, null)," +
+                        "('upper_case_string', 10.0, 1.0, 0.5, null, null, null)," +
                         "('mixed_case_string', null, 2.0, 0.5, null, null, null)," +
                         "(null, null, null, null, 8.0, null, null)");
     }
@@ -1132,7 +1162,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     }
 
     @Test(dataProvider = "testCheckpointWriteStatsAsStructDataProvider")
-    public void testCheckpointWriteStatsAsStruct(String type, String inputValue, String nullsFraction, String statsValue)
+    public void testCheckpointWriteStatsAsStruct(String type, String sampleValue, String highValue, String nullsFraction, String minValue, String maxValue)
     {
         String tableName = "test_checkpoint_write_stats_as_struct_" + randomNameSuffix();
 
@@ -1142,13 +1172,19 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
                         tableName,
                         type,
                         getLocationForTable(bucketName, tableName)));
-        assertUpdate("INSERT INTO " + tableName + " SELECT " + inputValue, 1);
+        assertUpdate(
+                disableStatisticsCollectionOnWrite(getSession()),
+                "INSERT INTO " + tableName + " SELECT " + sampleValue + " UNION ALL SELECT " + highValue, 2);
+
+        // TODO: Open checkpoint parquet file and verify 'stats_parsed' field directly
+        assertThat(getTableFiles(tableName))
+                .contains(getTableLocation(tableName) + "/_delta_log/_last_checkpoint");
 
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 "VALUES " +
-                        "('col', null, null, " + nullsFraction + ", null, " + statsValue + ", " + statsValue + ")," +
-                        "(null, null, null, null, 1.0, null, null)");
+                        "('col', null, null, " + nullsFraction + ", null, " + minValue + ", " + maxValue + ")," +
+                        "(null, null, null, null, 2.0, null, null)");
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -1156,23 +1192,24 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     @DataProvider
     public Object[][] testCheckpointWriteStatsAsStructDataProvider()
     {
+        // type, sampleValue, highValue, nullsFraction, minValue, maxValue
         return new Object[][] {
-                {"boolean", "true", "0.0", "null"},
-                {"integer", "1", "0.0", "1"},
-                {"tinyint", "2", "0.0", "2"},
-                {"smallint", "3", "0.0", "3"},
-                {"bigint", "1000", "0.0", "1000"},
-                {"real", "0.1", "0.0", "0.1"},
-                {"double", "1.0", "0.0", "1.0"},
-                {"decimal(3,2)", "3.14", "0.0", "3.14"},
-                {"decimal(30,1)", "12345", "0.0", "12345.0"},
-                {"varchar", "'test'", "0.0", "null"},
-                {"varbinary", "X'65683F'", "0.0", "null"},
-                {"date", "date '2021-02-03'", "0.0", "'2021-02-03'"},
-                {"timestamp(3) with time zone", "timestamp '2001-08-22 03:04:05.321 -08:00'", "0.0", "'2001-08-22 11:04:05.321 UTC'"},
-                {"array(int)", "array[1]", "null", "null"},
-                {"map(varchar,int)", "map(array['foo', 'bar'], array[1, 2])", "null", "null"},
-                {"row(x bigint)", "cast(row(1) as row(x bigint))", "null", "null"},
+                {"boolean", "true", "false", "0.0", "null", "null"},
+                {"integer", "1", "2147483647", "0.0", "1", "2147483647"},
+                {"tinyint", "2", "127", "0.0", "2", "127"},
+                {"smallint", "3", "32767", "0.0", "3", "32767"},
+                {"bigint", "1000", "9223372036854775807", "0.0", "1000", "9223372036854775807"},
+                {"real", "0.1", "999999.999", "0.0", "0.1", "1000000.0"},
+                {"double", "1.0", "9999999999999.999", "0.0", "1.0", "'1.0E13'"},
+                {"decimal(3,2)", "3.14", "9.99", "0.0", "3.14", "9.99"},
+                {"decimal(30,1)", "12345", "99999999999999999999999999999.9", "0.0", "12345.0", "'1.0E29'"},
+                {"varchar", "'test'", "'ŻŻŻŻŻŻŻŻŻŻ'", "0.0", "null", "null"},
+                {"varbinary", "X'65683F'", "X'ffffffffffffffffffff'", "0.0", "null", "null"},
+                {"date", "date '2021-02-03'", "date '9999-12-31'", "0.0", "'2021-02-03'", "'9999-12-31'"},
+                {"timestamp(3) with time zone", "timestamp '2001-08-22 03:04:05.321 -08:00'", "timestamp '9999-12-31 23:59:59.999 +12:00'", "0.0", "'2001-08-22 11:04:05.321 UTC'", "'9999-12-31 11:59:59.999 UTC'"},
+                {"array(int)", "array[1]", "array[2147483647]", "null", "null", "null"},
+                {"map(varchar,int)", "map(array['foo', 'bar'], array[1, 2])", "map(array['foo', 'bar'], array[-2147483648, 2147483647])", "null", "null", "null"},
+                {"row(x bigint)", "cast(row(1) as row(x bigint))", "cast(row(9223372036854775807) as row(x bigint))", "null", "null", "null"},
         };
     }
 
@@ -1191,8 +1228,8 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 "VALUES " +
-                        "('col', null, null, 0.0, null, 1, 1)," +
-                        "('unsupported', null, null, 0.0, null, null, null)," +
+                        "('col', null, 1.0, 0.0, null, 1, 1)," +
+                        "('unsupported', null, 1.0, 0.0, null, null, null)," +
                         "(null, null, null, null, 1.0, null, null)");
 
         assertUpdate("DROP TABLE " + tableName);
@@ -1313,7 +1350,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
                                 "   partitioned_by = ARRAY[%s]\n" +
                                 ")",
                         getSession().getCatalog().orElseThrow(),
-                        getSession().getSchema().orElseThrow(),
+                        SCHEMA,
                         tableName,
                         newLocation,
                         secondPartitioned ? "'a_number'" : ""));
@@ -1327,11 +1364,13 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     public void testAnalyze()
     {
         String tableName = "test_analyze_" + randomNameSuffix();
-        assertUpdate("CREATE TABLE " + tableName
-                + " WITH ("
-                + "location = '" + getLocationForTable(bucketName, tableName) + "'"
-                + ")"
-                + " AS SELECT * FROM tpch.sf1.nation", 25);
+        assertUpdate(
+                disableStatisticsCollectionOnWrite(getSession()),
+                "CREATE TABLE " + tableName
+                        + " WITH ("
+                        + "location = '" + getLocationForTable(bucketName, tableName) + "'"
+                        + ")"
+                        + " AS SELECT * FROM tpch.sf1.nation", 25);
 
         assertQuery(
                 "SHOW STATS FOR " + tableName,
@@ -1397,7 +1436,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
     public void testStatsSplitPruningBasedOnSepCreatedCheckpointOnTopOfCheckpointWithJustStructStats()
     {
         String tableName = "test_sep_checkpoint_stats_pruning_struct_stats_" + randomNameSuffix();
-        createTableFromResources(tableName, "databricks/pruning/parquet_struct_statistics", getQueryRunner());
+        registerTableFromResources(tableName, "databricks/pruning/parquet_struct_statistics", getQueryRunner());
         String transactionLogDirectory = format("%s/_delta_log", tableName);
 
         // there should should be one checkpoint already (created by DB)
@@ -1664,7 +1703,7 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
         Set<?> activeFiles = computeActual("SELECT \"$path\" FROM " + tableName).getOnlyColumnAsSet();
         String location = (String) computeScalar(format("SELECT DISTINCT regexp_replace(\"$path\", '/[^/]*$', '') FROM %s", tableName));
         assertUpdate("DROP TABLE " + tableName);
-        assertUpdate(format("CREATE TABLE %s(ignore integer) WITH (location = '%s')", tableName, location));
+        assertUpdate(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, tableName, location));
         // sanity check
         assertThat(computeActual("SELECT \"$path\" FROM " + tableName).getOnlyColumnAsSet()).as("active files after table recreated")
                 .isEqualTo(activeFiles);
@@ -1751,6 +1790,129 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
         assertThat(getAllDataFilesFromTableDirectory(tableName)).isEqualTo(union(initialFiles, updatedFiles));
     }
 
+    /**
+     * @see BaseDeltaLakeRegisterTableProcedureTest for more detailed tests
+     */
+    @Test
+    public void testRegisterTable()
+    {
+        String tableName = "test_register_table_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " (a INT, b VARCHAR, c BOOLEAN)");
+        assertUpdate("INSERT INTO " + tableName + " VALUES(1, 'INDIA', true)", 1);
+
+        String tableLocation = getTableLocation(tableName);
+        String showCreateTableOld = (String) computeScalar("SHOW CREATE TABLE " + tableName);
+
+        // Drop table from metastore and use the table content to register a table
+        metastore.dropTable(SCHEMA, tableName, false);
+        assertUpdate("CALL system.flush_metadata_cache(schema_name => CURRENT_SCHEMA, table_name => '" + tableName + "')");
+        // Verify that dropTableFromMetastore actually works
+        assertQueryFails("SELECT * FROM " + tableName, ".* Table '.*' does not exist");
+
+        assertUpdate("CALL system.register_table (CURRENT_SCHEMA, '" + tableName + "', '" + tableLocation + "')");
+        assertQuery("SELECT * FROM " + tableName, "VALUES (1, 'INDIA', true)");
+
+        assertUpdate("INSERT INTO " + tableName + " VALUES(2, 'POLAND', false)", 1);
+        String showCreateTableNew = (String) computeScalar("SHOW CREATE TABLE " + tableName);
+
+        assertThat(showCreateTableOld).isEqualTo(showCreateTableNew);
+        assertQuery("SELECT * FROM " + tableName, "VALUES (1, 'INDIA', true), (2, 'POLAND', false)");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testUnregisterTable()
+    {
+        String tableName = "test_unregister_table_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 a", 1);
+        String tableLocation = getTableLocation(tableName);
+
+        assertUpdate("CALL system.unregister_table(CURRENT_SCHEMA, '" + tableName + "')");
+        assertQueryFails("SELECT * FROM " + tableName, ".* Table .* does not exist");
+
+        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '" + tableName + "', '" + tableLocation + "')");
+        assertQuery("SELECT * FROM " + tableName, "VALUES 1");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testUnregisterBrokenTable()
+    {
+        String tableName = "test_unregister_broken_table_" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 a", 1);
+        String tableLocation = getTableLocation(tableName);
+
+        // Break the table by deleting files from the storage
+        String key = tableLocation.substring(bucketUrl().length());
+        MinioClient minio = hiveMinioDataLake.getMinioClient();
+        for (String file : minio.listObjects(bucketName, key)) {
+            minio.removeObject(bucketName, file);
+        }
+        assertThat(minio.listObjects(bucketName, key)).isEmpty();
+
+        // Verify unregister_table successfully deletes the table from metastore
+        assertUpdate("CALL system.unregister_table(CURRENT_SCHEMA, '" + tableName + "')");
+        assertQueryFails("SELECT * FROM " + tableName, ".* Table .* does not exist");
+    }
+
+    @Test
+    public void testUnregisterTableNotExistingSchema()
+    {
+        String schemaName = "test_unregister_table_not_existing_schema_" + randomNameSuffix();
+        assertQueryFails(
+                "CALL system.unregister_table('" + schemaName + "', 'non_existent_table')",
+                "Schema " + schemaName + " not found");
+    }
+
+    @Test
+    public void testUnregisterTableNotExistingTable()
+    {
+        String tableName = "test_unregister_table_not_existing_table_" + randomNameSuffix();
+        assertQueryFails(
+                "CALL system.unregister_table(CURRENT_SCHEMA, '" + tableName + "')",
+                "Table .* not found");
+    }
+
+    @Test
+    public void testRepeatUnregisterTable()
+    {
+        String tableName = "test_repeat_unregister_table_not_" + randomNameSuffix();
+        assertQueryFails(
+                "CALL system.unregister_table(CURRENT_SCHEMA, '" + tableName + "')",
+                "Table .* not found");
+
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 a", 1);
+        String tableLocation = getTableLocation(tableName);
+
+        assertUpdate("CALL system.unregister_table(CURRENT_SCHEMA, '" + tableName + "')");
+
+        // Verify failure the procedure can't unregister the tables more than once
+        assertQueryFails("CALL system.unregister_table(CURRENT_SCHEMA, '" + tableName + "')", "Table .* not found");
+
+        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '" + tableName + "', '" + tableLocation + "')");
+        assertQuery("SELECT * FROM " + tableName, "VALUES 1");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testUnregisterTableAccessControl()
+    {
+        String tableName = "test_unregister_table_access_control_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 a", 1);
+
+        assertAccessDenied(
+                "CALL system.unregister_table(CURRENT_SCHEMA, '" + tableName + "')",
+                "Cannot drop table .*",
+                privilege(tableName, DROP_TABLE));
+
+        assertQuery("SELECT * FROM " + tableName, "VALUES 1");
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
     private Set<String> getActiveFiles(String tableName)
     {
         return getActiveFiles(tableName, getQueryRunner().getDefaultSession());
@@ -1775,6 +1937,25 @@ public abstract class BaseDeltaLakeConnectorSmokeTest
         return Session.builder(getQueryRunner().getDefaultSession())
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.BROADCAST.name())
                 .setSystemProperty(ENABLE_DYNAMIC_FILTERING, Boolean.toString(dynamicFilteringEnabled))
+                .build();
+    }
+
+    private String getTableLocation(String tableName)
+    {
+        Pattern locationPattern = Pattern.compile(".*location = '(.*?)'.*", Pattern.DOTALL);
+        Matcher m = locationPattern.matcher((String) computeActual("SHOW CREATE TABLE " + tableName).getOnlyValue());
+        if (m.find()) {
+            String location = m.group(1);
+            verify(!m.find(), "Unexpected second match");
+            return location;
+        }
+        throw new IllegalStateException("Location not found in SHOW CREATE TABLE result");
+    }
+
+    private static Session disableStatisticsCollectionOnWrite(Session session)
+    {
+        return Session.builder(session)
+                .setCatalogSessionProperty(session.getCatalog().orElseThrow(), EXTENDED_STATISTICS_COLLECT_ON_WRITE, "false")
                 .build();
     }
 }

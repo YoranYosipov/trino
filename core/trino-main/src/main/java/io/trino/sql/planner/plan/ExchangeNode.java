@@ -34,7 +34,6 @@ import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_ARBITRARY_DIST
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_BROADCAST_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_PASSTHROUGH_DISTRIBUTION;
-import static io.trino.sql.planner.SystemPartitioningHandle.SCALED_WRITER_HASH_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.plan.ExchangeNode.Scope.LOCAL;
 import static io.trino.sql.planner.plan.ExchangeNode.Scope.REMOTE;
@@ -106,6 +105,8 @@ public class ExchangeNode
             checkArgument(scope != REMOTE || partitioningHandle.equals(SINGLE_DISTRIBUTION), "remote merging exchange requires single distribution");
             checkArgument(scope != LOCAL || partitioningHandle.equals(FIXED_PASSTHROUGH_DISTRIBUTION), "local merging exchange requires passthrough distribution");
             checkArgument(partitioningScheme.getOutputLayout().containsAll(ordering.getOrderBy()), "Partitioning scheme does not supply all required ordering symbols");
+            checkArgument(type == Type.GATHER, "Merging exchange must be of GATHER type");
+            checkArgument(inputs.size() == 1, "Merging exchange must have single input");
         });
         this.type = type;
         this.sources = sources;
@@ -131,6 +132,7 @@ public class ExchangeNode
                         child.getOutputSymbols(),
                         hashColumns,
                         replicateNullsAndAny,
+                        Optional.empty(),
                         Optional.empty()));
     }
 
@@ -248,12 +250,5 @@ public class ExchangeNode
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
         return new ExchangeNode(getId(), type, scope, partitioningScheme, newChildren, inputs, orderingScheme);
-    }
-
-    public boolean isHashPartitionedExchange()
-    {
-        PartitioningHandle partitioningHandle = partitioningScheme.getPartitioning().getHandle();
-        // catalog specific exchanges are hash partitioned exchanges with a catalog specific partition function
-        return partitioningHandle.equals(FIXED_HASH_DISTRIBUTION) || partitioningHandle.equals(SCALED_WRITER_HASH_DISTRIBUTION) || partitioningHandle.getCatalogHandle().isPresent();
     }
 }

@@ -17,6 +17,7 @@ import io.trino.tempto.ProductTest;
 import io.trino.testng.services.Flaky;
 import org.testng.annotations.Test;
 
+import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.assertions.QueryAssert.assertThat;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS;
@@ -26,6 +27,7 @@ import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICK
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_MATCH;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 
 public class TestHiveAndDeltaLakeCompatibility
         extends ProductTest
@@ -44,11 +46,26 @@ public class TestHiveAndDeltaLakeCompatibility
         onTrino().executeQuery("CREATE VIEW " + hiveViewQualifiedName + " AS SELECT 1 AS col_one");
 
         try {
-            assertThat(onTrino().executeQuery(format("SELECT table_name FROM delta.information_schema.columns WHERE table_schema = '%s'", schemaName))).hasNoRows();
+            assertThat(onTrino().executeQuery(format("SELECT table_name FROM delta.information_schema.columns WHERE table_schema = '%s'", schemaName)))
+                    .containsOnly(row(hiveViewName));
         }
         finally {
             onTrino().executeQuery("DROP VIEW IF EXISTS " + hiveViewQualifiedName);
             onTrino().executeQuery("DROP SCHEMA " + schemaName);
         }
+    }
+
+    @Test(groups = {DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS})
+    public void testUnregisterNotDeltaLakeTable()
+    {
+        String baseTableName = "test_unregister_not_delta_table_" + randomNameSuffix();
+        String hiveTableName = "hive.default." + baseTableName;
+
+        onTrino().executeQuery("CREATE TABLE " + hiveTableName + " AS SELECT 1 a");
+
+        assertThatThrownBy(() -> onTrino().executeQuery("CALL delta.system.unregister_table('default', '" + baseTableName + "')"))
+                .hasMessageContaining("not a Delta Lake table");
+
+        onTrino().executeQuery("DROP TABLE " + hiveTableName);
     }
 }

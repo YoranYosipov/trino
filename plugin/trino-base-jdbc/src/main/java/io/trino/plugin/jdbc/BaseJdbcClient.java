@@ -20,6 +20,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.io.Closer;
 import io.airlift.log.Logger;
+import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
@@ -103,6 +104,7 @@ public abstract class BaseJdbcClient
     protected final QueryBuilder queryBuilder;
     protected final String identifierQuote;
     protected final Set<String> jdbcTypesMappedToVarchar;
+    protected final RemoteQueryModifier queryModifier;
     private final IdentifierMapping identifierMapping;
 
     private final boolean supportsRetries;
@@ -112,7 +114,8 @@ public abstract class BaseJdbcClient
             String identifierQuote,
             ConnectionFactory connectionFactory,
             QueryBuilder queryBuilder,
-            IdentifierMapping identifierMapping)
+            IdentifierMapping identifierMapping,
+            RemoteQueryModifier remoteQueryModifier)
     {
         this(
                 identifierQuote,
@@ -120,6 +123,7 @@ public abstract class BaseJdbcClient
                 queryBuilder,
                 config.getJdbcTypesMappedToVarchar(),
                 identifierMapping,
+                remoteQueryModifier,
                 false);
     }
 
@@ -129,6 +133,7 @@ public abstract class BaseJdbcClient
             QueryBuilder queryBuilder,
             Set<String> jdbcTypesMappedToVarchar,
             IdentifierMapping identifierMapping,
+            RemoteQueryModifier remoteQueryModifier,
             boolean supportsRetries)
     {
         this.identifierQuote = requireNonNull(identifierQuote, "identifierQuote is null");
@@ -138,6 +143,7 @@ public abstract class BaseJdbcClient
                 .addAll(requireNonNull(jdbcTypesMappedToVarchar, "jdbcTypesMappedToVarchar is null"))
                 .build();
         this.identifierMapping = requireNonNull(identifierMapping, "identifierMapping is null");
+        this.queryModifier = requireNonNull(remoteQueryModifier, "remoteQueryModifier is null");
         this.supportsRetries = supportsRetries;
     }
 
@@ -274,7 +280,8 @@ public abstract class BaseJdbcClient
                 Optional.of(columns.build()),
                 // The query is opaque, so we don't know referenced tables
                 Optional.empty(),
-                0);
+                0,
+                Optional.empty());
     }
 
     @Override
@@ -284,6 +291,7 @@ public abstract class BaseJdbcClient
             return tableHandle.getColumns().get();
         }
         checkArgument(tableHandle.isNamedRelation(), "Cannot get columns for %s", tableHandle);
+        verify(tableHandle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(tableHandle));
         SchemaTableName schemaTableName = tableHandle.getRequiredNamedRelation().getSchemaTableName();
         RemoteTableName remoteTableName = tableHandle.getRequiredNamedRelation().getRemoteTableName();
 
@@ -404,9 +412,10 @@ public abstract class BaseJdbcClient
     }
 
     @Override
-    public Connection getConnection(ConnectorSession session, JdbcSplit split)
+    public Connection getConnection(ConnectorSession session, JdbcSplit split, JdbcTableHandle tableHandle)
             throws SQLException
     {
+        verify(tableHandle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(tableHandle));
         Connection connection = connectionFactory.openConnection(session);
         try {
             connection.setReadOnly(true);
@@ -426,6 +435,7 @@ public abstract class BaseJdbcClient
             List<JdbcColumnHandle> columns,
             Map<String, String> columnExpressions)
     {
+        verify(table.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(table));
         try (Connection connection = connectionFactory.openConnection(session)) {
             return prepareQuery(session, connection, table, groupingSets, columns, columnExpressions, Optional.empty());
         }
@@ -610,7 +620,7 @@ public abstract class BaseJdbcClient
 
             RemoteTableName remoteTableName = new RemoteTableName(Optional.ofNullable(catalog), Optional.ofNullable(remoteSchema), remoteTargetTableName);
             String sql = createTableSql(remoteTableName, columnList.build(), tableMetadata);
-            execute(connection, sql);
+            execute(session, connection, sql);
 
             return new JdbcOutputTableHandle(
                     catalog,
@@ -654,6 +664,7 @@ public abstract class BaseJdbcClient
         SchemaTableName schemaTableName = tableHandle.asPlainTable().getSchemaTableName();
         ConnectorIdentity identity = session.getIdentity();
 
+        verify(tableHandle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(tableHandle));
         try (Connection connection = connectionFactory.openConnection(session)) {
             verify(connection.getAutoCommit());
             String remoteSchema = identifierMapping.toRemoteSchemaName(identity, connection, schemaTableName.getSchemaName());
@@ -682,7 +693,7 @@ public abstract class BaseJdbcClient
             }
 
             String remoteTemporaryTableName = identifierMapping.toRemoteTableName(identity, connection, remoteSchema, generateTemporaryTableName());
-            copyTableSchema(connection, catalog, remoteSchema, remoteTable, remoteTemporaryTableName, columnNames.build());
+            copyTableSchema(session, connection, catalog, remoteSchema, remoteTable, remoteTemporaryTableName, columnNames.build());
 
             Optional<ColumnMetadata> pageSinkIdColumn = Optional.empty();
             if (shouldUseFaultTolerantExecution(session)) {
@@ -702,14 +713,14 @@ public abstract class BaseJdbcClient
                     columnTypes.build(),
                     Optional.of(jdbcColumnTypes.build()),
                     Optional.of(remoteTemporaryTableName),
-                    pageSinkIdColumn.map(ColumnMetadata::getName));
+                    pageSinkIdColumn.map(column -> identifierMapping.toRemoteColumnName(connection, column.getName())));
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
         }
     }
 
-    protected void copyTableSchema(Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
+    protected void copyTableSchema(ConnectorSession session, Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
     {
         String sql = format(
                 "CREATE TABLE %s AS SELECT %s FROM %s WHERE 0 = 1",
@@ -719,7 +730,7 @@ public abstract class BaseJdbcClient
                         .collect(joining(", ")),
                 quoted(catalogName, schemaName, tableName));
         try {
-            execute(connection, sql);
+            execute(session, connection, sql);
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
@@ -750,6 +761,7 @@ public abstract class BaseJdbcClient
     @Override
     public void renameTable(ConnectorSession session, JdbcTableHandle handle, SchemaTableName newTableName)
     {
+        verify(handle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(handle));
         RemoteTableName remoteTableName = handle.asPlainTable().getRemoteTableName();
         renameTable(session, remoteTableName.getCatalogName().orElse(null), remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName(), newTableName);
     }
@@ -774,7 +786,7 @@ public abstract class BaseJdbcClient
     protected void renameTable(ConnectorSession session, Connection connection, String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
             throws SQLException
     {
-        execute(connection, format(
+        execute(session, connection, format(
                 "ALTER TABLE %s RENAME TO %s",
                 quoted(catalogName, remoteSchemaName, remoteTableName),
                 quoted(catalogName, newRemoteSchemaName, newRemoteTableName)));
@@ -800,9 +812,10 @@ public abstract class BaseJdbcClient
         String pageSinkInsertSql = format("INSERT INTO %s (%s) VALUES (?)",
                 quoted(pageSinkTable),
                 pageSinkIdColumnName);
+        pageSinkInsertSql = queryModifier.apply(session, pageSinkInsertSql);
         LongWriteFunction pageSinkIdWriter = (LongWriteFunction) toWriteMapping(session, TRINO_PAGE_SINK_ID_COLUMN_TYPE).getWriteFunction();
 
-        execute(connection, pageSinkTableSql);
+        execute(session, connection, pageSinkTableSql);
 
         try (PreparedStatement statement = connection.prepareStatement(pageSinkInsertSql)) {
             int batchSize = 0;
@@ -868,7 +881,7 @@ public abstract class BaseJdbcClient
                         handle.getPageSinkIdColumnName().get());
             }
 
-            execute(connection, insertSql);
+            execute(session, connection, insertSql);
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
@@ -891,6 +904,7 @@ public abstract class BaseJdbcClient
     @Override
     public void addColumn(ConnectorSession session, JdbcTableHandle handle, ColumnMetadata column)
     {
+        verify(handle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(handle));
         addColumn(session, handle.asPlainTable().getRemoteTableName(), column);
     }
 
@@ -909,7 +923,7 @@ public abstract class BaseJdbcClient
         }
     }
 
-    private void addColumn(ConnectorSession session, Connection connection, RemoteTableName table, ColumnMetadata column)
+    protected void addColumn(ConnectorSession session, Connection connection, RemoteTableName table, ColumnMetadata column)
             throws SQLException
     {
         String columnName = column.getName();
@@ -919,12 +933,13 @@ public abstract class BaseJdbcClient
                 "ALTER TABLE %s ADD %s",
                 quoted(table),
                 getColumnDefinitionSql(session, column, remoteColumnName));
-        execute(connection, sql);
+        execute(session, connection, sql);
     }
 
     @Override
     public void renameColumn(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
     {
+        verify(handle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(handle));
         try (Connection connection = connectionFactory.openConnection(session)) {
             verify(connection.getAutoCommit());
             String newRemoteColumnName = identifierMapping.toRemoteColumnName(connection, newColumnName);
@@ -939,7 +954,7 @@ public abstract class BaseJdbcClient
     protected void renameColumn(ConnectorSession session, Connection connection, RemoteTableName remoteTableName, String remoteColumnName, String newRemoteColumnName)
             throws SQLException
     {
-        execute(connection, format(
+        execute(session, connection, format(
                 "ALTER TABLE %s RENAME COLUMN %s TO %s",
                 quoted(remoteTableName),
                 quoted(remoteColumnName),
@@ -949,6 +964,7 @@ public abstract class BaseJdbcClient
     @Override
     public void dropColumn(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column)
     {
+        verify(handle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(handle));
         try (Connection connection = connectionFactory.openConnection(session)) {
             verify(connection.getAutoCommit());
             String remoteColumnName = identifierMapping.toRemoteColumnName(connection, column.getColumnName());
@@ -956,7 +972,25 @@ public abstract class BaseJdbcClient
                     "ALTER TABLE %s DROP COLUMN %s",
                     quoted(handle.asPlainTable().getRemoteTableName()),
                     quoted(remoteColumnName));
-            execute(connection, sql);
+            execute(session, connection, sql);
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    public void setColumnType(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Type type)
+    {
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            verify(connection.getAutoCommit());
+            String remoteColumnName = identifierMapping.toRemoteColumnName(connection, column.getColumnName());
+            String sql = format(
+                    "ALTER TABLE %s ALTER COLUMN %s SET DATA TYPE %s",
+                    quoted(handle.asPlainTable().getRemoteTableName()),
+                    quoted(remoteColumnName),
+                    toWriteMapping(session, type).getDataType());
+            execute(session, connection, sql);
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
@@ -966,6 +1000,7 @@ public abstract class BaseJdbcClient
     @Override
     public void dropTable(ConnectorSession session, JdbcTableHandle handle)
     {
+        verify(handle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(handle));
         dropTable(session, handle.asPlainTable().getRemoteTableName());
     }
 
@@ -1055,6 +1090,7 @@ public abstract class BaseJdbcClient
     @Override
     public TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle, TupleDomain<ColumnHandle> tupleDomain)
     {
+        verify(handle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(handle));
         return TableStatistics.empty();
     }
 
@@ -1076,7 +1112,7 @@ public abstract class BaseJdbcClient
     protected void createSchema(ConnectorSession session, Connection connection, String remoteSchemaName)
             throws SQLException
     {
-        execute(connection, "CREATE SCHEMA " + quoted(remoteSchemaName));
+        execute(session, connection, "CREATE SCHEMA " + quoted(remoteSchemaName));
     }
 
     @Override
@@ -1096,7 +1132,7 @@ public abstract class BaseJdbcClient
     protected void dropSchema(ConnectorSession session, Connection connection, String remoteSchemaName)
             throws SQLException
     {
-        execute(connection, "DROP SCHEMA " + quoted(remoteSchemaName));
+        execute(session, connection, "DROP SCHEMA " + quoted(remoteSchemaName));
     }
 
     @Override
@@ -1118,25 +1154,26 @@ public abstract class BaseJdbcClient
     protected void renameSchema(ConnectorSession session, Connection connection, String remoteSchemaName, String newRemoteSchemaName)
             throws SQLException
     {
-        execute(connection, "ALTER SCHEMA " + quoted(remoteSchemaName) + " RENAME TO " + quoted(newRemoteSchemaName));
+        execute(session, connection, "ALTER SCHEMA " + quoted(remoteSchemaName) + " RENAME TO " + quoted(newRemoteSchemaName));
     }
 
     protected void execute(ConnectorSession session, String query)
     {
         try (Connection connection = connectionFactory.openConnection(session)) {
-            execute(connection, query);
+            execute(session, connection, query);
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
         }
     }
 
-    protected void execute(Connection connection, String query)
+    protected void execute(ConnectorSession session, Connection connection, String query)
             throws SQLException
     {
         try (Statement statement = connection.createStatement()) {
-            log.debug("Execute: %s", query);
-            statement.execute(query);
+            String modifiedQuery = queryModifier.apply(session, query);
+            log.debug("Execute: %s", modifiedQuery);
+            statement.execute(modifiedQuery);
         }
         catch (SQLException e) {
             e.addSuppressed(new RuntimeException("Query: " + query));
@@ -1233,6 +1270,7 @@ public abstract class BaseJdbcClient
     @Override
     public Map<String, Object> getTableProperties(ConnectorSession session, JdbcTableHandle tableHandle)
     {
+        verify(tableHandle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(tableHandle));
         return emptyMap();
     }
 
@@ -1242,6 +1280,7 @@ public abstract class BaseJdbcClient
         checkArgument(handle.isNamedRelation(), "Unable to delete from synthetic table: %s", handle);
         checkArgument(handle.getLimit().isEmpty(), "Unable to delete when limit is set: %s", handle);
         checkArgument(handle.getSortOrder().isEmpty(), "Unable to delete when sort order is set: %s", handle);
+        verify(handle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(handle));
         try (Connection connection = connectionFactory.openConnection(session)) {
             verify(connection.getAutoCommit());
             PreparedQuery preparedQuery = queryBuilder.prepareDeleteQuery(
@@ -1263,6 +1302,7 @@ public abstract class BaseJdbcClient
     @Override
     public void truncateTable(ConnectorSession session, JdbcTableHandle handle)
     {
+        verify(handle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(handle));
         String sql = "TRUNCATE TABLE " + quoted(handle.asPlainTable().getRemoteTableName());
         execute(session, sql);
     }

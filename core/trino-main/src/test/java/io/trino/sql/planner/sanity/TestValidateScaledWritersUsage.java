@@ -15,12 +15,12 @@ package io.trino.sql.planner.sanity;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.connector.CatalogHandle;
 import io.trino.connector.MockConnectorFactory;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.TableHandle;
 import io.trino.plugin.tpch.TpchColumnHandle;
 import io.trino.plugin.tpch.TpchTableHandle;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorPartitioningHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.SchemaTableName;
@@ -37,6 +37,7 @@ import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.testing.LocalQueryRunner;
 import io.trino.testing.TestingTransactionHandle;
+import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
@@ -49,19 +50,20 @@ import static io.trino.sql.planner.SystemPartitioningHandle.SCALED_WRITER_HASH_D
 import static io.trino.sql.planner.SystemPartitioningHandle.SCALED_WRITER_ROUND_ROBIN_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.TypeAnalyzer.createTestingTypeAnalyzer;
+import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
 import static io.trino.testing.TestingHandles.createTestCatalogHandle;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestValidateScaledWritersUsage
         extends BasePlanTest
 {
+    private LocalQueryRunner queryRunner;
     private PlannerContext plannerContext;
     private PlanBuilder planBuilder;
     private Symbol symbol;
     private TableScanNode tableScanNode;
     private CatalogHandle catalogSupportingScaledWriters;
     private CatalogHandle catalogNotSupportingScaledWriters;
-    private LocalQueryRunner queryRunner;
     private SchemaTableName schemaTableName;
 
     @BeforeClass
@@ -82,6 +84,18 @@ public class TestValidateScaledWritersUsage
         TpchColumnHandle nationkeyColumnHandle = new TpchColumnHandle("nationkey", BIGINT);
         symbol = new Symbol("nationkey");
         tableScanNode = planBuilder.tableScan(nationTableHandle, ImmutableList.of(symbol), ImmutableMap.of(symbol, nationkeyColumnHandle));
+    }
+
+    @AfterClass(alwaysRun = true)
+    public void tearDown()
+    {
+        queryRunner.close();
+        queryRunner = null;
+        plannerContext = null;
+        planBuilder = null;
+        tableScanNode = null;
+        catalogSupportingScaledWriters = null;
+        catalogNotSupportingScaledWriters = null;
     }
 
     private MockConnectorFactory createConnectorFactorySupportingReportingBytesWritten(boolean supportsWrittenBytes, String name)
@@ -323,7 +337,7 @@ public class TestValidateScaledWritersUsage
                 {SCALED_WRITER_ROUND_ROBIN_DISTRIBUTION},
                 {SCALED_WRITER_HASH_DISTRIBUTION},
                 {new PartitioningHandle(
-                        Optional.of(CatalogHandle.fromId("test")),
+                        Optional.of(TEST_CATALOG_HANDLE),
                         Optional.of(new ConnectorTransactionHandle() {}),
                         new ConnectorPartitioningHandle() {},
                         true)}
