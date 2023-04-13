@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Multimap;
+import io.trino.operator.table.ExcludeColumns;
 import io.trino.spi.function.AggregationFunctionMetadata;
 import io.trino.spi.function.AggregationImplementation;
 import io.trino.spi.function.BoundSignature;
@@ -31,6 +32,7 @@ import io.trino.spi.function.ScalarFunctionImplementation;
 import io.trino.spi.function.SchemaFunctionName;
 import io.trino.spi.function.Signature;
 import io.trino.spi.function.WindowFunctionSupplier;
+import io.trino.spi.ptf.TableFunctionProcessorProvider;
 import io.trino.spi.type.TypeSignature;
 
 import javax.annotation.concurrent.ThreadSafe;
@@ -46,6 +48,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.metadata.OperatorNameUtil.isOperatorName;
 import static io.trino.metadata.OperatorNameUtil.unmangleOperator;
+import static io.trino.operator.table.ExcludeColumns.getExcludeColumnsFunctionProcessorProvider;
 import static io.trino.spi.function.FunctionKind.AGGREGATE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -170,6 +173,16 @@ public class GlobalFunctionCatalog
             InvocationConvention invocationConvention)
     {
         return functions.getFunctionBundle(functionId).getScalarFunctionImplementation(functionId, boundSignature, functionDependencies, invocationConvention);
+    }
+
+    @Override
+    public TableFunctionProcessorProvider getTableFunctionProcessorProvider(SchemaFunctionName name)
+    {
+        if (name.equals(new SchemaFunctionName(BUILTIN_SCHEMA, ExcludeColumns.NAME))) {
+            return getExcludeColumnsFunctionProcessorProvider();
+        }
+
+        return null;
     }
 
     private static class FunctionMap

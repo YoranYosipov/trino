@@ -46,6 +46,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -466,6 +467,17 @@ public interface ConnectorMetadata
     }
 
     /**
+     * Drop the specified field, potentially nested, from a row.
+     *
+     * @param fieldPath path to a field within the column, without leading column name.
+     */
+    @Experimental(eta = "2023-05-01") // TODO add support for rows inside arrays and maps and for anonymous row fields
+    default void dropField(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column, List<String> fieldPath)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support dropping fields");
+    }
+
+    /**
      * Get the physical layout for a new table.
      */
     default Optional<ConnectorTableLayout> getNewTableLayout(ConnectorSession session, ConnectorTableMetadata tableMetadata)
@@ -753,18 +765,40 @@ public interface ConnectorMetadata
 
     /**
      * Gets the schema properties for the specified schema.
+     *
+     * @deprecated use {@link #getSchemaProperties(ConnectorSession, String)}
      */
+    @Deprecated(forRemoval = true)
     default Map<String, Object> getSchemaProperties(ConnectorSession session, CatalogSchemaName schemaName)
     {
         return Map.of();
     }
 
     /**
-     * Get the schema properties for the specified schema.
+     * Gets the schema properties for the specified schema.
      */
+    default Map<String, Object> getSchemaProperties(ConnectorSession session, String schemaName)
+    {
+        return getSchemaProperties(session, new CatalogSchemaName("invalid", schemaName));
+    }
+
+    /**
+     * Get the schema properties for the specified schema.
+     *
+     * @deprecated use {@link #getSchemaOwner(ConnectorSession, String)}
+     */
+    @Deprecated(forRemoval = true)
     default Optional<TrinoPrincipal> getSchemaOwner(ConnectorSession session, CatalogSchemaName schemaName)
     {
         return Optional.empty();
+    }
+
+    /**
+     * Get the schema properties for the specified schema.
+     */
+    default Optional<TrinoPrincipal> getSchemaOwner(ConnectorSession session, String schemaName)
+    {
+        return getSchemaOwner(session, new CatalogSchemaName("invalid", schemaName));
     }
 
     /**
@@ -1422,5 +1456,10 @@ public interface ConnectorMetadata
     default boolean supportsReportingWrittenBytes(ConnectorSession session, ConnectorTableHandle connectorTableHandle)
     {
         return false;
+    }
+
+    default OptionalInt getMaxWriterTasks(ConnectorSession session)
+    {
+        return OptionalInt.empty();
     }
 }

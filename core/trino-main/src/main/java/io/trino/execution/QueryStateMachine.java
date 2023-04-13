@@ -29,6 +29,7 @@ import io.trino.client.NodeVersion;
 import io.trino.exchange.ExchangeInput;
 import io.trino.execution.QueryExecution.QueryOutputInfo;
 import io.trino.execution.StateMachine.StateChangeListener;
+import io.trino.execution.querystats.PlanOptimizersStatsCollector;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.Metadata;
 import io.trino.operator.BlockedReason;
@@ -118,6 +119,7 @@ public class QueryStateMachine
     private final TransactionManager transactionManager;
     private final Metadata metadata;
     private final QueryOutputManager outputManager;
+    private final Executor stateMachineExecutor;
 
     private final AtomicLong currentUserMemory = new AtomicLong();
     private final AtomicLong peakUserMemory = new AtomicLong();
@@ -164,6 +166,7 @@ public class QueryStateMachine
     private final StateMachine<Optional<QueryInfo>> finalQueryInfo;
 
     private final WarningCollector warningCollector;
+    private final PlanOptimizersStatsCollector planOptimizersStatsCollector;
 
     private final Optional<QueryType> queryType;
 
@@ -183,10 +186,11 @@ public class QueryStateMachine
             URI self,
             ResourceGroupId resourceGroup,
             TransactionManager transactionManager,
-            Executor executor,
+            Executor stateMachineExecutor,
             Ticker ticker,
             Metadata metadata,
             WarningCollector warningCollector,
+            PlanOptimizersStatsCollector queryStatsCollector,
             Optional<QueryType> queryType,
             NodeVersion version)
     {
@@ -199,10 +203,12 @@ public class QueryStateMachine
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
         this.queryStateTimer = new QueryStateTimer(ticker);
         this.metadata = requireNonNull(metadata, "metadata is null");
+        this.stateMachineExecutor = requireNonNull(stateMachineExecutor, "stateMachineExecutor is null");
+        this.planOptimizersStatsCollector = requireNonNull(queryStatsCollector, "queryStatsCollector is null");
 
-        this.queryState = new StateMachine<>("query " + query, executor, QUEUED, TERMINAL_QUERY_STATES);
-        this.finalQueryInfo = new StateMachine<>("finalQueryInfo-" + queryId, executor, Optional.empty());
-        this.outputManager = new QueryOutputManager(executor);
+        this.queryState = new StateMachine<>("query " + query, stateMachineExecutor, QUEUED, TERMINAL_QUERY_STATES);
+        this.finalQueryInfo = new StateMachine<>("finalQueryInfo-" + queryId, stateMachineExecutor, Optional.empty());
+        this.outputManager = new QueryOutputManager(stateMachineExecutor);
         this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
         this.queryType = requireNonNull(queryType, "queryType is null");
         this.version = requireNonNull(version, "version is null");
@@ -224,6 +230,7 @@ public class QueryStateMachine
             Executor executor,
             Metadata metadata,
             WarningCollector warningCollector,
+            PlanOptimizersStatsCollector queryStatsCollector,
             Optional<QueryType> queryType,
             boolean faultTolerantExecutionExchangeEncryptionEnabled,
             NodeVersion version)
@@ -242,6 +249,7 @@ public class QueryStateMachine
                 Ticker.systemTicker(),
                 metadata,
                 warningCollector,
+                queryStatsCollector,
                 queryType,
                 faultTolerantExecutionExchangeEncryptionEnabled,
                 version);
@@ -261,6 +269,7 @@ public class QueryStateMachine
             Ticker ticker,
             Metadata metadata,
             WarningCollector warningCollector,
+            PlanOptimizersStatsCollector queryStatsCollector,
             Optional<QueryType> queryType,
             boolean faultTolerantExecutionExchangeEncryptionEnabled,
             NodeVersion version)
@@ -300,6 +309,7 @@ public class QueryStateMachine
                 ticker,
                 metadata,
                 warningCollector,
+                queryStatsCollector,
                 queryType,
                 version);
         queryStateMachine.addStateChangeListener(newState -> {
@@ -321,6 +331,11 @@ public class QueryStateMachine
     public Session getSession()
     {
         return session;
+    }
+
+    public Executor getStateMachineExecutor()
+    {
+        return stateMachineExecutor;
     }
 
     public long getPeakUserMemoryInBytes()
@@ -356,6 +371,11 @@ public class QueryStateMachine
     public WarningCollector getWarningCollector()
     {
         return warningCollector;
+    }
+
+    public PlanOptimizersStatsCollector getPlanOptimizersStatsCollector()
+    {
+        return planOptimizersStatsCollector;
     }
 
     public void updateMemoryUsage(
@@ -733,7 +753,8 @@ public class QueryStateMachine
 
                 getDynamicFiltersStats(),
 
-                operatorStatsSummary.build());
+                operatorStatsSummary.build(),
+                planOptimizersStatsCollector.getTopRuleStats());
     }
 
     public void setOutputInfoListener(Consumer<QueryOutputInfo> listener)
@@ -1306,6 +1327,7 @@ public class QueryStateMachine
                 queryStats.getFailedPhysicalWrittenDataSize(),
                 queryStats.getStageGcStatistics(),
                 queryStats.getDynamicFiltersStats(),
+                ImmutableList.of(),
                 ImmutableList.of()); // Remove the operator summaries as OperatorInfo (especially DirectExchangeClientStatus) can hold onto a large amount of memory
     }
 
@@ -1410,9 +1432,9 @@ public class QueryStateMachine
                 outputTaskFailureListeners.add(listener);
                 failures = ImmutableMap.copyOf(outputTaskFailures);
             }
-            executor.execute(() -> {
-                failures.forEach(listener::onTaskFailed);
-            });
+            if (!failures.isEmpty()) {
+                executor.execute(() -> failures.forEach(listener::onTaskFailed));
+            }
         }
 
         public void outputTaskFailed(TaskId taskId, Throwable failure)
@@ -1422,11 +1444,13 @@ public class QueryStateMachine
                 outputTaskFailures.putIfAbsent(taskId, failure);
                 listeners = ImmutableList.copyOf(outputTaskFailureListeners);
             }
-            executor.execute(() -> {
-                for (TaskFailureListener listener : listeners) {
-                    listener.onTaskFailed(taskId, failure);
-                }
-            });
+            if (!listeners.isEmpty()) {
+                executor.execute(() -> {
+                    for (TaskFailureListener listener : listeners) {
+                        listener.onTaskFailed(taskId, failure);
+                    }
+                });
+            }
         }
 
         private synchronized Optional<QueryOutputInfo> getQueryOutputInfo()

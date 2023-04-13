@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>408-SNAPSHOT</version>
+        <version>414-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -73,6 +73,7 @@
             <artifactId>trino-plugin-toolkit</artifactId>
         </dependency>
 
+        <!-- TODO: move to runtime scope and remove dependency plugin exclusion below -->
         <dependency>
             <groupId>io.trino.hadoop</groupId>
             <artifactId>hadoop-apache</artifactId>
@@ -213,7 +214,7 @@
 
         <dependency>
             <groupId>org.apache.iceberg</groupId>
-            <artifactId>iceberg-hive-metastore</artifactId>
+            <artifactId>iceberg-orc</artifactId>
         </dependency>
 
         <dependency>
@@ -296,12 +297,6 @@
         </dependency>
 
         <dependency>
-            <groupId>org.apache.iceberg</groupId>
-            <artifactId>iceberg-orc</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-
-        <dependency>
             <groupId>org.jetbrains</groupId>
             <artifactId>annotations</artifactId>
             <scope>runtime</scope>
@@ -348,6 +343,13 @@
         <dependency>
             <groupId>io.trino</groupId>
             <artifactId>trino-exchange-filesystem</artifactId>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
+            <artifactId>trino-filesystem</artifactId>
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
@@ -497,6 +499,11 @@
     <build>
         <plugins>
             <plugin>
+                <groupId>org.antlr</groupId>
+                <artifactId>antlr4-maven-plugin</artifactId>
+            </plugin>
+
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
                 <configuration>
@@ -506,7 +513,21 @@
                                 <exclude>com.google.guava:guava</exclude>
                             </excludes>
                         </requireUpperBoundDeps>
+                        <RestrictImports>
+                            <includeTestCode>false</includeTestCode>
+                            <bannedImport>org.apache.hadoop.**</bannedImport>
+                        </RestrictImports>
                     </rules>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <configuration>
+                    <ignoredNonTestScopedDependencies>
+                        <ignoredDependency>io.trino.hadoop:hadoop-apache</ignoredDependency>
+                    </ignoredNonTestScopedDependencies>
                 </configuration>
             </plugin>
 
@@ -541,6 +562,8 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <excludes>
+                                <exclude>**/Test*Avro*.java</exclude>
+                                <exclude>**/Test*Minio*.java</exclude>
                                 <exclude>**/TestIcebergGlueCatalogConnectorSmokeTest.java</exclude>
                                 <exclude>**/TestTrinoGlueCatalog.java</exclude>
                                 <exclude>**/TestSharedGlueMetastore.java</exclude>
@@ -551,8 +574,6 @@
                                 <exclude>**/TestIcebergGlueCatalogSkipArchive.java</exclude>
                                 <exclude>**/TestIcebergGcsConnectorSmokeTest.java</exclude>
                                 <exclude>**/TestIcebergAbfsConnectorSmokeTest.java</exclude>
-                                <exclude>io/trino/plugin/iceberg/catalog/jdbc/Test*.java</exclude>
-                                <exclude>io/trino/plugin/iceberg/catalog/rest/Test*.java</exclude>
                                 <exclude>**/Test*FailureRecoveryTest.java</exclude>
                             </excludes>
                         </configuration>
@@ -579,7 +600,7 @@
         </profile>
 
         <profile>
-            <id>additional-catalog-tests</id>
+            <id>minio-and-avro</id>
             <build>
                 <plugins>
                     <plugin>
@@ -587,8 +608,8 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <includes>
-                                <include>**/io/trino/plugin/iceberg/catalog/jdbc/Test*.java</include>
-                                <include>**/io/trino/plugin/iceberg/catalog/rest/Test*.java</include>
+                                <include>**/Test*Avro*.java</include>
+                                <include>**/Test*Minio*.java</include>
                             </includes>
                         </configuration>
                     </plugin>

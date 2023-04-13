@@ -97,7 +97,7 @@ public class TestPushPredicateIntoTableScan
     @BeforeClass
     public void setUpBeforeClass()
     {
-        pushPredicateIntoTableScan = new PushPredicateIntoTableScan(tester().getPlannerContext(), createTestingTypeAnalyzer(tester().getPlannerContext()));
+        pushPredicateIntoTableScan = new PushPredicateIntoTableScan(tester().getPlannerContext(), createTestingTypeAnalyzer(tester().getPlannerContext()), false);
 
         CatalogHandle catalogHandle = tester().getCurrentCatalogHandle();
         tester().getQueryRunner().createCatalog(MOCK_CATALOG, createMockFactory(), ImmutableMap.of());
@@ -395,7 +395,6 @@ public class TestPushPredicateIntoTableScan
                         return new ConnectorTableProperties(
                                 TupleDomain.all(),
                                 Optional.of(new ConnectorTablePartitioning(PARTITIONING_HANDLE, ImmutableList.of(MOCK_COLUMN_HANDLE))),
-                                Optional.empty(),
                                 Optional.empty(),
                                 ImmutableList.of());
                     }

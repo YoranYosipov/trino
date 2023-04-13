@@ -32,6 +32,7 @@ import static io.trino.tests.product.TestGroups.DELTA_LAKE_OSS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_ISSUE;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_MATCH;
+import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.dropDeltaTableWithRetry;
 import static io.trino.tests.product.utils.QueryExecutors.onDelta;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 
@@ -63,7 +64,7 @@ public class TestDeltaLakeColumnMappingMode
                     .containsOnly(expectedRows);
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
@@ -102,6 +103,10 @@ public class TestDeltaLakeColumnMappingMode
                     .containsOnly(ImmutableList.of(row("ala")));
             assertThat(onTrino().executeQuery("SELECT a_number FROM delta.default." + tableName + " WHERE nested.field1 = 'databricks 1'"))
                     .containsOnly(ImmutableList.of(row(1)));
+            assertThat(onTrino().executeQuery("SELECT a_number FROM delta.default." + tableName + " WHERE part = 'part1'"))
+                    .containsOnly(row(1));
+            assertThat(onDelta().executeQuery("SELECT a_number FROM default." + tableName + " WHERE part = 'part1'"))
+                    .containsOnly(row(1));
 
             // Verify the connector can read renamed columns correctly
             onDelta().executeQuery("ALTER TABLE default." + tableName + " RENAME COLUMN a_number TO new_a_column");
@@ -122,7 +127,7 @@ public class TestDeltaLakeColumnMappingMode
                     .containsOnly(expectedRows);
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
@@ -158,7 +163,7 @@ public class TestDeltaLakeColumnMappingMode
                             row(null, null, null, null, 2.0, null, null)));
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
@@ -217,7 +222,7 @@ public class TestDeltaLakeColumnMappingMode
                     .containsOnly(row(1, null), row(2, null));
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
@@ -250,7 +255,7 @@ public class TestDeltaLakeColumnMappingMode
                             row(null, null, null, null, 3.0, null, null)));
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
@@ -286,7 +291,7 @@ public class TestDeltaLakeColumnMappingMode
                             row(null, null, null, null, 3.0, null, null)));
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
@@ -319,7 +324,7 @@ public class TestDeltaLakeColumnMappingMode
                             row(null, null, null, null, 3.0, null, null)));
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
@@ -356,7 +361,7 @@ public class TestDeltaLakeColumnMappingMode
                     .hasMessageContaining("This connector does not support dropping columns");
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
@@ -387,7 +392,7 @@ public class TestDeltaLakeColumnMappingMode
                             row(null, null, null, null, 3.0, null, null)));
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 

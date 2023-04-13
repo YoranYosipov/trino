@@ -16,6 +16,7 @@ package io.trino.sql.planner.optimizations;
 import io.trino.Session;
 import io.trino.cost.StatsAndCosts;
 import io.trino.cost.TableStatsProvider;
+import io.trino.execution.querystats.PlanOptimizersStatsCollector;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.FunctionManager;
 import io.trino.metadata.MergeHandle;
@@ -76,7 +77,15 @@ public class BeginTableWrite
     }
 
     @Override
-    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector, TableStatsProvider tableStatsProvider)
+    public PlanNode optimize(
+            PlanNode plan,
+            Session session,
+            TypeProvider types,
+            SymbolAllocator symbolAllocator,
+            PlanNodeIdAllocator idAllocator,
+            WarningCollector warningCollector,
+            PlanOptimizersStatsCollector planOptimizersStatsCollector,
+            TableStatsProvider tableStatsProvider)
     {
         try {
             return SimplePlanRewriter.rewriteWith(new Rewriter(session), plan, Optional.empty());
@@ -238,14 +247,16 @@ public class BeginTableWrite
                         metadata.beginCreateTable(session, create.getCatalog(), create.getTableMetadata(), create.getLayout()),
                         create.getTableMetadata().getTable(),
                         target.supportsReportingWrittenBytes(metadata, session),
-                        target.supportsMultipleWritersPerPartition(metadata, session));
+                        target.supportsMultipleWritersPerPartition(metadata, session),
+                        target.getMaxWriterTasks(metadata, session));
             }
             if (target instanceof InsertReference insert) {
                 return new InsertTarget(
                         metadata.beginInsert(session, insert.getHandle(), insert.getColumns()),
                         metadata.getTableMetadata(session, insert.getHandle()).getTable(),
                         target.supportsReportingWrittenBytes(metadata, session),
-                        target.supportsMultipleWritersPerPartition(metadata, session));
+                        target.supportsMultipleWritersPerPartition(metadata, session),
+                        target.getMaxWriterTasks(metadata, session));
             }
             if (target instanceof MergeTarget merge) {
                 MergeHandle mergeHandle = metadata.beginMerge(session, merge.getHandle());

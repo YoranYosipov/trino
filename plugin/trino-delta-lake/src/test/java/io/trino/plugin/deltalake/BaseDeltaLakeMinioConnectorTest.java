@@ -15,7 +15,6 @@ package io.trino.plugin.deltalake;
 
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import io.airlift.units.DataSize;
 import io.trino.Session;
 import io.trino.execution.QueryInfo;
@@ -44,25 +43,29 @@ import java.util.stream.IntStream;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Sets.union;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.CHANGE_DATA_FEED_COLUMN_NAMES;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.TRANSACTION_LOG_DIRECTORY;
 import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.testing.DataProviders.toDataProvider;
+import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_SCHEMA;
 import static io.trino.testing.TestingNames.randomNameSuffix;
-import static io.trino.testing.assertions.Assert.assertEquals;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 
 public abstract class BaseDeltaLakeMinioConnectorTest
         extends BaseConnectorTest
 {
     private static final String SCHEMA = "test_schema";
 
-    protected String bucketName;
-    protected String resourcePath;
+    protected final String bucketName;
+    protected final String resourcePath;
     protected HiveMinioDataLake hiveMinioDataLake;
 
     public BaseDeltaLakeMinioConnectorTest(String bucketName, String resourcePath)
@@ -138,7 +141,7 @@ public abstract class BaseDeltaLakeMinioConnectorTest
     {
         assertThat(e)
                 .hasMessage("Failed to write Delta Lake transaction log entry")
-                .getCause()
+                .cause()
                 .hasMessageMatching(
                         "Transaction log locked.*" +
                                 "|.*/_delta_log/\\d+.json already exists" +
@@ -152,7 +155,7 @@ public abstract class BaseDeltaLakeMinioConnectorTest
     {
         assertThat(e)
                 .hasMessage("Failed to write Delta Lake transaction log entry")
-                .getCause()
+                .cause()
                 .hasMessageMatching(
                         "Transaction log locked.*" +
                                 "|.*/_delta_log/\\d+.json already exists" +
@@ -166,7 +169,7 @@ public abstract class BaseDeltaLakeMinioConnectorTest
     {
         assertThat(e)
                 .hasMessageMatching("Unable to add '.*' column for: .*")
-                .getCause()
+                .cause()
                 .hasMessageMatching(
                         "Transaction log locked.*" +
                                 "|.*/_delta_log/\\d+.json already exists" +
@@ -201,33 +204,15 @@ public abstract class BaseDeltaLakeMinioConnectorTest
     }
 
     @Override
-    protected Optional<String> filterColumnNameTestData(String columnName)
-    {
-        // TODO https://github.com/trinodb/trino/issues/11297: these should be cleanly rejected and filterColumnNameTestData() replaced with isColumnNameRejected()
-        Set<String> unsupportedColumnNames = ImmutableSet.of(
-                "atrailingspace ",
-                " aleadingspace",
-                "a,comma",
-                "a;semicolon",
-                "a space");
-        if (unsupportedColumnNames.contains(columnName)) {
-            return Optional.empty();
-        }
-
-        return Optional.of(columnName);
-    }
-
-    @Override
     protected TestTable createTableWithDefaultColumns()
     {
         throw new SkipException("Delta Lake does not support columns with a default value");
     }
 
-    @Test
     @Override
-    public void testDescribeTable()
+    protected MaterializedResult getDescribeOrdersResult()
     {
-        MaterializedResult expectedColumns = MaterializedResult.resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
+        return resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
                 .row("orderkey", "bigint", "", "")
                 .row("custkey", "bigint", "", "")
                 .row("orderstatus", "varchar", "", "")
@@ -238,8 +223,6 @@ public abstract class BaseDeltaLakeMinioConnectorTest
                 .row("shippriority", "integer", "", "")
                 .row("comment", "varchar", "", "")
                 .build();
-        MaterializedResult actualColumns = computeActual("DESCRIBE orders");
-        assertEquals(actualColumns, expectedColumns);
     }
 
     @Test
@@ -563,6 +546,19 @@ public abstract class BaseDeltaLakeMinioConnectorTest
     }
 
     @Test
+    public void testTableLocationTrailingSpace()
+    {
+        String tableName = "table_with_space_" + randomNameSuffix();
+        String tableLocationWithTrailingSpace = "s3://" + bucketName + "/" + tableName + " ";
+
+        assertUpdate(format("CREATE TABLE %s (customer VARCHAR) WITH (location = '%s')", tableName, tableLocationWithTrailingSpace));
+        assertUpdate("INSERT INTO " + tableName + " (customer) VALUES ('Aaron'), ('Bill')", 2);
+        assertQuery("SELECT * FROM " + tableName, "VALUES ('Aaron'), ('Bill')");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
     public void testTableLocationTrailingSlash()
     {
         String tableWithSlash = "table_with_slash";
@@ -844,11 +840,120 @@ public abstract class BaseDeltaLakeMinioConnectorTest
         assertThatThrownBy(() -> query("INSERT INTO " + tableName + " VALUES(TRY(5/0), 40, 400)"))
                 .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
 
-        //TODO these 2 should fail  https://github.com/trinodb/trino/issues/13435
-        assertUpdate("UPDATE " + tableName + " SET col2 = NULL where col3 = 100", 1);
-        assertUpdate("UPDATE " + tableName + " SET col2 = TRY(5/0) where col3 = 200", 1);
+        assertThatThrownBy(() -> query("UPDATE " + tableName + " SET col1 = NULL where col3 = 100"))
+                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
+        assertThatThrownBy(() -> query("UPDATE " + tableName + " SET col1 = TRY(5/0) where col3 = 200"))
+                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
 
-        assertQuery("SELECT * FROM " + tableName, "VALUES(1, null, 100), (2, null, 200)");
+        assertQuery("SELECT * FROM " + tableName, "VALUES(1, 10, 100), (2, 20, 200)");
+    }
+
+    @Test(dataProvider = "changeDataFeedColumnNamesDataProvider")
+    public void testCreateTableWithChangeDataFeedColumnName(String columnName)
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_table_cdf", "(" + columnName + " int)")) {
+            assertTableColumnNames(table.getName(), columnName);
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_table_cdf", "AS SELECT 1 AS " + columnName)) {
+            assertTableColumnNames(table.getName(), columnName);
+        }
+    }
+
+    @Test(dataProvider = "changeDataFeedColumnNamesDataProvider")
+    public void testUnsupportedCreateTableWithChangeDataFeed(String columnName)
+    {
+        String tableName = "test_unsupported_create_table_cdf" + randomNameSuffix();
+
+        assertQueryFails(
+                "CREATE TABLE " + tableName + "(" + columnName + " int) WITH (change_data_feed_enabled = true)",
+                "\\QUnable to use [%s] when change data feed is enabled\\E".formatted(columnName));
+        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+
+        assertQueryFails(
+                "CREATE TABLE " + tableName + " WITH (change_data_feed_enabled = true) AS SELECT 1 AS " + columnName,
+                "\\QUnable to use [%s] when change data feed is enabled\\E".formatted(columnName));
+        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+    }
+
+    @Test(dataProvider = "changeDataFeedColumnNamesDataProvider")
+    public void testUnsupportedAddColumnWithChangeDataFeed(String columnName)
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_add_column", "(col int) WITH (change_data_feed_enabled = true)")) {
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " ADD COLUMN " + columnName + " int",
+                    "\\QColumn name %s is forbidden when change data feed is enabled\\E".formatted(columnName));
+            assertTableColumnNames(table.getName(), "col");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " SET PROPERTIES change_data_feed_enabled = false");
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN " + columnName + " int");
+            assertTableColumnNames(table.getName(), "col", columnName);
+        }
+    }
+
+    @Test(dataProvider = "changeDataFeedColumnNamesDataProvider")
+    public void testUnsupportedSetTablePropertyWithChangeDataFeed(String columnName)
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_properties", "(" + columnName + " int)")) {
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " SET PROPERTIES change_data_feed_enabled = true",
+                    "\\QUnable to enable change data feed because table contains [%s] columns\\E".formatted(columnName));
+            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                    .doesNotContain("change_data_feed_enabled = true");
+        }
+    }
+
+    @DataProvider
+    public Object[][] changeDataFeedColumnNamesDataProvider()
+    {
+        return CHANGE_DATA_FEED_COLUMN_NAMES.stream().collect(toDataProvider());
+    }
+
+    @Test
+    public void testThatEnableCdfTablePropertyIsShownForCtasTables()
+    {
+        String tableName = "test_show_create_show_property_for_table_created_with_ctas_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(page_url, views)" +
+                "WITH (change_data_feed_enabled = true) " +
+                "AS VALUES ('url1', 1), ('url2', 2)", 2);
+        assertThat((String) computeScalar("SHOW CREATE TABLE " + tableName))
+                .contains("change_data_feed_enabled = true");
+    }
+
+    @Test
+    public void testAlterTableWithUnsupportedProperties()
+    {
+        String tableName = "test_alter_table_with_unsupported_properties_" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + " (a_number INT)");
+
+        assertQueryFails("ALTER TABLE " + tableName + " SET PROPERTIES change_data_feed_enabled = true, checkpoint_interval = 10",
+                "The following properties cannot be updated: checkpoint_interval");
+        assertQueryFails("ALTER TABLE " + tableName + " SET PROPERTIES partitioned_by = ARRAY['a']",
+                "The following properties cannot be updated: partitioned_by");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testSettingChangeDataFeedEnabledProperty()
+    {
+        String tableName = "test_enable_and_disable_cdf_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, domain VARCHAR, views INTEGER)");
+
+        assertUpdate("ALTER TABLE " + tableName + " SET PROPERTIES change_data_feed_enabled = false");
+        assertThat((String) computeScalar("SHOW CREATE TABLE " + tableName))
+                .contains("change_data_feed_enabled = false");
+
+        assertUpdate("ALTER TABLE " + tableName + " SET PROPERTIES change_data_feed_enabled = true");
+        assertThat((String) computeScalar("SHOW CREATE TABLE " + tableName)).contains("change_data_feed_enabled = true");
+
+        assertUpdate("ALTER TABLE " + tableName + " SET PROPERTIES change_data_feed_enabled = false");
+        assertThat((String) computeScalar("SHOW CREATE TABLE " + tableName)).contains("change_data_feed_enabled = false");
+
+        assertUpdate("ALTER TABLE " + tableName + " SET PROPERTIES change_data_feed_enabled = true");
+        assertThat((String) computeScalar("SHOW CREATE TABLE " + tableName))
+                .contains("change_data_feed_enabled = true");
     }
 
     @Override

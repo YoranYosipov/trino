@@ -45,8 +45,8 @@ import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.HIVE_ICEBERG_REDIRECTIONS;
 import static io.trino.tests.product.TestGroups.HIVE_VIEWS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
-import static io.trino.tests.product.utils.HadoopTestUtils.ERROR_READING_FROM_HIVE_ISSUE;
-import static io.trino.tests.product.utils.HadoopTestUtils.ERROR_READING_FROM_HIVE_MATCH;
+import static io.trino.tests.product.utils.HadoopTestUtils.RETRYABLE_FAILURES_ISSUES;
+import static io.trino.tests.product.utils.HadoopTestUtils.RETRYABLE_FAILURES_MATCH;
 import static io.trino.tests.product.utils.QueryExecutors.onHive;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
@@ -315,7 +315,7 @@ public abstract class AbstractTestHiveViews
      * Test view containing IF, IN, LIKE, BETWEEN, CASE, COALESCE, operators, delimited and non-delimited columns, an inline comment
      */
     @Test(groups = HIVE_VIEWS)
-    @Flaky(issue = ERROR_READING_FROM_HIVE_ISSUE, match = ERROR_READING_FROM_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testRichSqlSyntax()
     {
         onHive().executeQuery("DROP VIEW IF EXISTS view_with_rich_syntax");
@@ -482,30 +482,22 @@ public abstract class AbstractTestHiveViews
         unsetSessionProperty("hive_timestamp_nanos.timestamp_precision");
 
         assertThat(onTrino().executeQuery("SELECT CAST(ts AS varchar) FROM timestamp_hive_view")).containsOnly(row("1990-01-02 12:13:14.123"));
-        assertThatThrownBy(
-                // TODO(https://github.com/trinodb/trino/issues/6295) it is not possible to query Hive view with timestamps if hive.timestamp-precision=NANOSECONDS
-                () -> assertThat(onTrino().executeQuery("SELECT CAST(ts AS varchar) FROM hive_timestamp_nanos.default.timestamp_hive_view")).containsOnly(row("1990-01-02 12:13:14.123456789"))
-        ).hasMessageContaining("timestamp(9) projected from query view at position 0 cannot be coerced to column [ts] of type timestamp(3) stored in view definition");
+        assertThat(onTrino().executeQuery("SELECT CAST(ts AS varchar) FROM hive_timestamp_nanos.default.timestamp_hive_view"))
+                .containsOnly(row("1990-01-02 12:13:14.123456789"));
 
         setSessionProperty("hive.timestamp_precision", "'MILLISECONDS'");
         setSessionProperty("hive_timestamp_nanos.timestamp_precision", "'MILLISECONDS'");
 
         assertThat(onTrino().executeQuery("SELECT CAST(ts AS varchar) FROM timestamp_hive_view")).containsOnly(row("1990-01-02 12:13:14.123"));
-        assertThatThrownBy(
-                // TODO(https://github.com/trinodb/trino/issues/6295) it is not possible to query Hive view with timestamps if hive.timestamp-precision=NANOSECONDS
-                () -> assertThat(onTrino().executeQuery("SELECT CAST(ts AS varchar) FROM hive_timestamp_nanos.default.timestamp_hive_view")).containsOnly(row("1990-01-02 12:13:14.123"))
-        ).hasMessageContaining("timestamp(9) projected from query view at position 0 cannot be coerced to column [ts] of type timestamp(3) stored in view definition");
+        assertThat(onTrino().executeQuery("SELECT CAST(ts AS varchar) FROM hive_timestamp_nanos.default.timestamp_hive_view"))
+                .containsOnly(row("1990-01-02 12:13:14.123456789"));
 
         setSessionProperty("hive.timestamp_precision", "'NANOSECONDS'");
         setSessionProperty("hive_timestamp_nanos.timestamp_precision", "'NANOSECONDS'");
 
-        // TODO(https://github.com/trinodb/trino/issues/6295) timestamp_precision has no effect on Hive views
-        // should be: assertThat(query("SELECT CAST(ts AS varchar) FROM timestamp_hive_view")).containsOnly(row("1990-01-02 12:13:14.123456789"))
         assertThat(onTrino().executeQuery("SELECT CAST(ts AS varchar) FROM timestamp_hive_view")).containsOnly(row("1990-01-02 12:13:14.123"));
-        assertThatThrownBy(
-                // TODO(https://github.com/trinodb/trino/issues/6295) it is not possible to query Hive view with timestamps if hive.timestamp-precision=NANOSECONDS
-                () -> assertThat(onTrino().executeQuery("SELECT CAST(ts AS varchar) FROM hive_timestamp_nanos.default.timestamp_hive_view")).containsOnly(row("1990-01-02 12:13:14.123456789"))
-        ).hasMessageContaining("timestamp(9) projected from query view at position 0 cannot be coerced to column [ts] of type timestamp(3) stored in view definition");
+        assertThat(onTrino().executeQuery("SELECT CAST(ts AS varchar) FROM hive_timestamp_nanos.default.timestamp_hive_view"))
+                .containsOnly(row("1990-01-02 12:13:14.123456789"));
     }
 
     @Test(groups = HIVE_VIEWS)
@@ -536,7 +528,7 @@ public abstract class AbstractTestHiveViews
     }
 
     @Test(groups = HIVE_VIEWS)
-    @Flaky(issue = ERROR_READING_FROM_HIVE_ISSUE, match = ERROR_READING_FROM_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testUnionAllViews()
     {
         onHive().executeQuery("DROP TABLE IF EXISTS union_helper");
@@ -572,7 +564,7 @@ public abstract class AbstractTestHiveViews
     }
 
     @Test(groups = HIVE_VIEWS)
-    @Flaky(issue = ERROR_READING_FROM_HIVE_ISSUE, match = ERROR_READING_FROM_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testUnionDistinctViews()
     {
         if (getHiveVersionMajor() < 1 || (getHiveVersionMajor() == 1 && getHiveVersionMinor() < 2)) {

@@ -38,10 +38,9 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.connector.ConnectorPageSink;
 import io.trino.spi.connector.ConnectorSession;
-import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
-import org.apache.hadoop.fs.Path;
-import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import io.trino.spi.type.TypeOperators;
+import org.apache.parquet.format.CompressionCodec;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -57,13 +56,14 @@ import java.util.concurrent.CompletableFuture;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.wrappedBuffer;
+import static io.trino.filesystem.Locations.appendPath;
 import static io.trino.plugin.deltalake.DeltaLakeErrorCode.DELTA_LAKE_BAD_WRITE;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getCompressionCodec;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getParquetWriterBlockSize;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getParquetWriterPageSize;
+import static io.trino.plugin.deltalake.DeltaLakeTypes.toParquetType;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogAccess.canonicalizeColumnName;
 import static io.trino.plugin.hive.util.HiveUtil.escapePathName;
-import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
@@ -76,6 +76,7 @@ public abstract class AbstractDeltaLakePageSink
 
     private static final int MAX_PAGE_POSITIONS = 4096;
 
+    private final TypeOperators typeOperators;
     private final List<DeltaLakeColumnHandle> dataColumnHandles;
     private final int[] dataColumnInputIndex;
     private final List<String> dataColumnNames;
@@ -108,6 +109,7 @@ public abstract class AbstractDeltaLakePageSink
     protected final ImmutableList.Builder<DataFileInfo> dataFileInfos = ImmutableList.builder();
 
     public AbstractDeltaLakePageSink(
+            TypeOperators typeOperators,
             List<DeltaLakeColumnHandle> inputColumns,
             List<String> originalPartitionColumns,
             PageIndexerFactory pageIndexerFactory,
@@ -120,6 +122,7 @@ public abstract class AbstractDeltaLakePageSink
             DeltaLakeWriterStats stats,
             String trinoVersion)
     {
+        this.typeOperators = requireNonNull(typeOperators, "typeOperators is null");
         requireNonNull(inputColumns, "inputColumns is null");
 
         requireNonNull(pageIndexerFactory, "pageIndexerFactory is null");
@@ -355,26 +358,25 @@ public abstract class AbstractDeltaLakePageSink
                 closeWriter(writerIndex);
             }
 
-            Path filePath = new Path(outputPathDirectory);
+            String filePath = outputPathDirectory;
 
             List<String> partitionValues = createPartitionValues(partitionColumnTypes, partitionColumns, position);
             Optional<String> partitionName = Optional.empty();
             if (!originalPartitionColumnNames.isEmpty()) {
                 String partName = makePartName(originalPartitionColumnNames, partitionValues);
-                filePath = new Path(outputPathDirectory, partName);
+                filePath = appendPath(outputPathDirectory, partName);
                 partitionName = Optional.of(partName);
             }
 
             String fileName = session.getQueryId() + "-" + randomUUID();
-            filePath = new Path(filePath, fileName);
+            filePath = appendPath(filePath, fileName);
 
-            FileWriter fileWriter = createParquetFileWriter(filePath.toString());
+            FileWriter fileWriter = createParquetFileWriter(filePath);
 
-            Path rootTableLocationPath = new Path(tableLocation);
             DeltaLakeWriter writer = new DeltaLakeWriter(
                     fileSystem,
                     fileWriter,
-                    rootTableLocationPath,
+                    tableLocation,
                     getRelativeFilePath(partitionName, fileName),
                     partitionValues,
                     stats,
@@ -392,7 +394,7 @@ public abstract class AbstractDeltaLakePageSink
 
     private String getRelativeFilePath(Optional<String> partitionName, String fileName)
     {
-        return getPathPrefix() + partitionName.map(partition -> new Path(partition, fileName).toString()).orElse(fileName);
+        return getPathPrefix() + partitionName.map(partition -> appendPath(partition, fileName)).orElse(fileName);
     }
 
     protected void closeWriter(int writerIndex)
@@ -452,19 +454,13 @@ public abstract class AbstractDeltaLakePageSink
                 .setMaxBlockSize(getParquetWriterBlockSize(session))
                 .setMaxPageSize(getParquetWriterPageSize(session))
                 .build();
-        CompressionCodecName compressionCodecName = getCompressionCodec(session).getParquetCompressionCodec();
+        CompressionCodec compressionCodec = getCompressionCodec(session).getParquetCompressionCodec();
 
         try {
             Closeable rollbackAction = () -> fileSystem.deleteFile(path);
 
             List<Type> parquetTypes = dataColumnTypes.stream()
-                    .map(type -> {
-                        if (type instanceof TimestampWithTimeZoneType) {
-                            verify(((TimestampWithTimeZoneType) type).getPrecision() == 3, "Unsupported type: %s", type);
-                            return TIMESTAMP_MILLIS;
-                        }
-                        return type;
-                    })
+                    .map(type -> toParquetType(typeOperators, type))
                     .collect(toImmutableList());
 
             // we use identity column mapping; input page already contains only data columns per
@@ -484,7 +480,7 @@ public abstract class AbstractDeltaLakePageSink
                     schemaConverter.getPrimitiveTypes(),
                     parquetWriterOptions,
                     identityMapping,
-                    compressionCodecName,
+                    compressionCodec,
                     trinoVersion,
                     false,
                     Optional.empty(),

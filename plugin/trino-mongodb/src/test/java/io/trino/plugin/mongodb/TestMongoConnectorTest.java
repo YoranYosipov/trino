@@ -60,8 +60,8 @@ import static org.testng.Assert.assertNotNull;
 public class TestMongoConnectorTest
         extends BaseConnectorTest
 {
-    private MongoServer server;
-    private MongoClient client;
+    protected MongoServer server;
+    protected MongoClient client;
 
     @Override
     protected QueryRunner createQueryRunner()
@@ -89,6 +89,7 @@ public class TestMongoConnectorTest
             case SUPPORTS_RENAME_SCHEMA:
                 return false;
 
+            case SUPPORTS_DROP_FIELD:
             case SUPPORTS_RENAME_COLUMN:
                 return false;
 
@@ -586,7 +587,7 @@ public class TestMongoConnectorTest
                 "VALUES (11, 11), (14, 11), (11, 15), (12, 15), (12, 11), (14, 15), (13, 13)");
 
         // Group by ObjectId (IS DISTINCT FROM)
-        assertQuery("SELECT array_agg(i ORDER BY i) FROM " + inlineTable + " GROUP BY one", "VALUES ((10, 15)), ((11, 12, 14)), ((13))");
+        assertQuery("SELECT array_agg(i ORDER BY i) FROM " + inlineTable + " GROUP BY one", "VALUES (ARRAY[10, 15]), (ARRAY[11, 12, 14]), (ARRAY[13])");
         assertQuery("SELECT i FROM " + inlineTable + " GROUP BY one, i", "VALUES 10, 11, 12, 13, 14, 15");
 
         // Group by Row(ObjectId) (ID DISTINCT FROM in @OperatorDependency)
@@ -737,6 +738,20 @@ public class TestMongoConnectorTest
 
         assertQuery(
                 "SELECT row_field.first.second FROM TABLE(mongodb.system.query(database => 'tpch', collection => '" + tableName + "', filter => '{ \"row_field.first.second\": 1 }'))",
+                "VALUES 1");
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testNativeQueryHelperFunction()
+    {
+        String tableName = "test_query_helper_function" + randomNameSuffix();
+        MongoCollection<Document> collection = client.getDatabase("tpch").getCollection(tableName);
+        collection.insertOne(new Document(ImmutableMap.of("id", 1, "timestamp", LocalDateTime.of(2023, 3, 20, 1, 2, 3))));
+        collection.insertOne(new Document(ImmutableMap.of("id", 2, "timestamp", LocalDateTime.of(2024, 3, 20, 1, 2, 3))));
+
+        assertQuery(
+                "SELECT id FROM TABLE(mongodb.system.query(database => 'tpch', collection => '" + tableName + "', filter => '{ timestamp: ISODate(\"2023-03-20T01:02:03.000Z\") }'))",
                 "VALUES 1");
         assertUpdate("DROP TABLE " + tableName);
     }

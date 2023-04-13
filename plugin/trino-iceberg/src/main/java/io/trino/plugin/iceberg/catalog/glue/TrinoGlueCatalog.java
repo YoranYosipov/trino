@@ -59,10 +59,10 @@ import io.trino.spi.connector.ViewNotFoundException;
 import io.trino.spi.security.PrincipalType;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.type.TypeManager;
-import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
@@ -81,6 +81,7 @@ import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.filesystem.Locations.appendPath;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_DATABASE_LOCATION_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_METASTORE_ERROR;
 import static io.trino.plugin.hive.HiveMetadata.STORAGE_TABLE;
@@ -198,10 +199,6 @@ public class TrinoGlueCatalog
     private List<String> listNamespaces(ConnectorSession session, Optional<String> namespace)
     {
         if (namespace.isPresent()) {
-            if (isHiveSystemSchema(namespace.get())) {
-                // TODO https://github.com/trinodb/trino/issues/1559 information_schema should be handled by the engine fully
-                return ImmutableList.of();
-            }
             return ImmutableList.of(namespace.get());
         }
         return listNamespaces(session);
@@ -256,7 +253,7 @@ public class TrinoGlueCatalog
     public void createNamespace(ConnectorSession session, String namespace, Map<String, Object> properties, TrinoPrincipal owner)
     {
         checkArgument(owner.getType() == PrincipalType.USER, "Owner type must be USER");
-        checkArgument(owner.getName().equals(session.getUser()), "Explicit schema owner is not supported");
+        checkArgument(owner.getName().equals(session.getUser().toLowerCase(ENGLISH)), "Explicit schema owner is not supported");
 
         try {
             stats.getCreateDatabase().call(() ->
@@ -377,6 +374,7 @@ public class TrinoGlueCatalog
             SchemaTableName schemaTableName,
             Schema schema,
             PartitionSpec partitionSpec,
+            SortOrder sortOrder,
             String location,
             Map<String, String> properties)
     {
@@ -385,6 +383,7 @@ public class TrinoGlueCatalog
                 schemaTableName,
                 schema,
                 partitionSpec,
+                sortOrder,
                 location,
                 properties,
                 Optional.of(session.getUser()));
@@ -543,7 +542,6 @@ public class TrinoGlueCatalog
 
         String tableName = createNewTableName(schemaTableName.getTableName());
 
-        Path location;
         if (databaseLocation == null) {
             if (defaultSchemaLocation.isEmpty()) {
                 throw new TrinoException(
@@ -554,13 +552,10 @@ public class TrinoGlueCatalog
                                 schemaTableName.getSchemaName()));
             }
             String schemaDirectoryName = schemaTableName.getSchemaName() + ".db";
-            location = new Path(new Path(defaultSchemaLocation.get(), schemaDirectoryName), tableName);
-        }
-        else {
-            location = new Path(databaseLocation, tableName);
+            databaseLocation = appendPath(defaultSchemaLocation.get(), schemaDirectoryName);
         }
 
-        return location.toString();
+        return appendPath(databaseLocation, tableName);
     }
 
     @Override

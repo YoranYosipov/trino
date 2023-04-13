@@ -69,6 +69,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 
@@ -325,6 +326,12 @@ public class CountingAccessMetadata
     public void dropColumn(Session session, TableHandle tableHandle, ColumnHandle column)
     {
         delegate.dropColumn(session, tableHandle, column);
+    }
+
+    @Override
+    public void dropField(Session session, TableHandle tableHandle, ColumnHandle column, List<String> fieldPath)
+    {
+        delegate.dropField(session, tableHandle, column, fieldPath);
     }
 
     @Override
@@ -866,5 +873,11 @@ public class CountingAccessMetadata
     public Optional<TableHandle> getTableHandle(Session session, QualifiedObjectName tableName, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion)
     {
         return delegate.getTableHandle(session, tableName, startVersion, endVersion);
+    }
+
+    @Override
+    public OptionalInt getMaxWriterTasks(Session session, String catalogName)
+    {
+        return delegate.getMaxWriterTasks(session, catalogName);
     }
 }

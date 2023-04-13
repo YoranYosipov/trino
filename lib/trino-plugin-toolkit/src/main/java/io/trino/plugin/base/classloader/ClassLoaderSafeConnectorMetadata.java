@@ -85,6 +85,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -417,6 +418,14 @@ public class ClassLoaderSafeConnectorMetadata
     }
 
     @Override
+    public void dropField(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column, List<String> fieldPath)
+    {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+            delegate.dropField(session, tableHandle, column, fieldPath);
+        }
+    }
+
+    @Override
     public void renameTable(ConnectorSession session, ConnectorTableHandle tableHandle, SchemaTableName newTableName)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
@@ -614,6 +623,7 @@ public class ClassLoaderSafeConnectorMetadata
         }
     }
 
+    @SuppressWarnings("removal")
     @Override
     public Map<String, Object> getSchemaProperties(ConnectorSession session, CatalogSchemaName schemaName)
     {
@@ -623,11 +633,24 @@ public class ClassLoaderSafeConnectorMetadata
     }
 
     @Override
+    public Map<String, Object> getSchemaProperties(ConnectorSession session, String schemaName)
+    {
+        return delegate.getSchemaProperties(session, schemaName);
+    }
+
+    @SuppressWarnings("removal")
+    @Override
     public Optional<TrinoPrincipal> getSchemaOwner(ConnectorSession session, CatalogSchemaName schemaName)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
             return delegate.getSchemaOwner(session, schemaName);
         }
+    }
+
+    @Override
+    public Optional<TrinoPrincipal> getSchemaOwner(ConnectorSession session, String schemaName)
+    {
+        return delegate.getSchemaOwner(session, schemaName);
     }
 
     @Override
@@ -1077,6 +1100,14 @@ public class ClassLoaderSafeConnectorMetadata
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
             return delegate.supportsReportingWrittenBytes(session, connectorTableHandle);
+        }
+    }
+
+    @Override
+    public OptionalInt getMaxWriterTasks(ConnectorSession session)
+    {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getMaxWriterTasks(session);
         }
     }
 

@@ -220,7 +220,7 @@ to the following table:
     - Time zone is UTC
   * - ``GEOGRAPHY``
     - ``VARCHAR``
-    - In `Well-known text (WKT) <https://en.wikipedia.org/wiki/Well-known_text_representation_of_geometry>`_ format
+    - In `Well-known text (WKT) <https://wikipedia.org/wiki/Well-known_text_representation_of_geometry>`_ format
   * - ``ARRAY``
     - ``ARRAY``
     -
@@ -259,6 +259,9 @@ to the following table:
     - ``INT64``
     - ``INT``, ``SMALLINT``, ``INTEGER``, ``BIGINT``, ``TINYINT``, and
       ``BYTEINT`` are aliases for ``INT64`` in BigQuery.
+  * - ``DECIMAL(P,S)``
+    - ``NUMERIC``
+    - The default precision and scale of ``NUMERIC`` is ``(38, 9)``.
   * - ``VARCHAR``
     - ``STRING``
     -
@@ -344,7 +347,8 @@ running a query natively may be faster.
 
 .. include:: polymorphic-table-function-ordering.fragment
 
-For example, group and concatenate all employee IDs by manager ID::
+For example, query the ``example`` catalog and group and concatenate all
+employee IDs by manager ID::
 
     SELECT
       *

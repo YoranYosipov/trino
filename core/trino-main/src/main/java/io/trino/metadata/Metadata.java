@@ -67,6 +67,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 
@@ -253,6 +254,11 @@ public interface Metadata
      * Drop the specified column.
      */
     void dropColumn(Session session, TableHandle tableHandle, ColumnHandle column);
+
+    /**
+     * Drop the specified field from the column.
+     */
+    void dropField(Session session, TableHandle tableHandle, ColumnHandle column, List<String> fieldPath);
 
     /**
      * Drops the specified table
@@ -716,4 +722,10 @@ public interface Metadata
      * Returns a table handle for the specified table name with a specified version
      */
     Optional<TableHandle> getTableHandle(Session session, QualifiedObjectName tableName, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion);
+
+    /**
+     * Returns maximum number of tasks that can be created while writing data to specific connector.
+     * Note: It is ignored when retry policy is set to TASK
+     */
+    OptionalInt getMaxWriterTasks(Session session, String catalogName);
 }

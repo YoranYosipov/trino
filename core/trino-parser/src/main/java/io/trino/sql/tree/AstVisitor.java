@@ -582,6 +582,16 @@ public abstract class AstVisitor<R, C>
         return visitTableElement(node, context);
     }
 
+    protected R visitCreateCatalog(CreateCatalog node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
+    protected R visitDropCatalog(DropCatalog node, C context)
+    {
+        return visitStatement(node, context);
+    }
+
     protected R visitCreateSchema(CreateSchema node, C context)
     {
         return visitStatement(node, context);
@@ -1147,9 +1157,19 @@ public abstract class AstVisitor<R, C>
         return visitExpression(node, context);
     }
 
+    protected R visitJsonObjectMember(JsonObjectMember node, C context)
+    {
+        return visitNode(node, context);
+    }
+
     protected R visitJsonArray(JsonArray node, C context)
     {
         return visitExpression(node, context);
+    }
+
+    protected R visitJsonArrayElement(JsonArrayElement node, C context)
+    {
+        return visitNode(node, context);
     }
 
     protected R visitEmptyTableTreatment(EmptyTableTreatment node, C context)

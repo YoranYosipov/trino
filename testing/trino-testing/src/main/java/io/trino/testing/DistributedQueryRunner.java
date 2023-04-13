@@ -28,6 +28,7 @@ import io.trino.Session.SessionBuilder;
 import io.trino.cost.StatsCalculator;
 import io.trino.execution.FailureInjector.InjectedFailureType;
 import io.trino.execution.QueryManager;
+import io.trino.execution.querystats.PlanOptimizersStatsCollector;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.AllNodes;
 import io.trino.metadata.FunctionBundle;
@@ -237,8 +238,7 @@ public class DistributedQueryRunner
                 .put("node-manager.http-client.min-threads", "1") // default 8
                 .put("exchange.page-buffer-client.max-callback-threads", "5") // default 25
                 .put("exchange.http-client.idle-timeout", "1h")
-                .put("task.max-index-memory", "16kB") // causes index joins to fault load
-                .put("distributed-index-joins-enabled", "true");
+                .put("task.max-index-memory", "16kB"); // causes index joins to fault load
         if (coordinator) {
             propertiesBuilder.put("node-scheduler.include-coordinator", "true");
             propertiesBuilder.put("join-distribution-type", "PARTITIONED");
@@ -485,17 +485,7 @@ public class DistributedQueryRunner
     @Override
     public MaterializedResult execute(Session session, @Language("SQL") String sql)
     {
-        lock.readLock().lock();
-        try {
-            return trinoClient.execute(session, sql).getResult();
-        }
-        catch (Throwable e) {
-            e.addSuppressed(new Exception("SQL: " + sql));
-            throw e;
-        }
-        finally {
-            lock.readLock().unlock();
-        }
+        return executeWithQueryId(session, sql).getResult();
     }
 
     public MaterializedResultWithQueryId executeWithQueryId(Session session, @Language("SQL") String sql)
@@ -504,6 +494,10 @@ public class DistributedQueryRunner
         try {
             ResultWithQueryId<MaterializedResult> result = trinoClient.execute(session, sql);
             return new MaterializedResultWithQueryId(result.getQueryId(), result.getResult());
+        }
+        catch (Throwable e) {
+            e.addSuppressed(new Exception("SQL: " + sql));
+            throw e;
         }
         finally {
             lock.readLock().unlock();
@@ -518,7 +512,7 @@ public class DistributedQueryRunner
     }
 
     @Override
-    public Plan createPlan(Session session, String sql, WarningCollector warningCollector)
+    public Plan createPlan(Session session, String sql, WarningCollector warningCollector, PlanOptimizersStatsCollector planOptimizersStatsCollector)
     {
         QueryId queryId = executeWithQueryId(session, sql).getQueryId();
         Plan queryPlan = getQueryPlan(queryId);

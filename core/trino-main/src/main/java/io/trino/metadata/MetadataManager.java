@@ -126,6 +126,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -250,6 +251,7 @@ public final class MetadataManager
                 ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
                 metadata.listSchemaNames(connectorSession).stream()
                         .map(schema -> schema.toLowerCase(Locale.ENGLISH))
+                        .filter(schema -> !isExternalInformationSchema(catalogHandle, schema))
                         .forEach(schemaNames::add);
             }
         }
@@ -508,8 +510,12 @@ public final class MetadataManager
             for (CatalogHandle catalogHandle : catalogMetadata.listCatalogHandles()) {
                 ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
                 ConnectorSession connectorSession = session.toConnectorSession(catalogHandle);
+                if (isExternalInformationSchema(catalogHandle, prefix.getSchemaName())) {
+                    continue;
+                }
                 metadata.listTables(connectorSession, prefix.getSchemaName()).stream()
                         .map(convertFromSchemaTableName(prefix.getCatalogName()))
+                        .filter(table -> !isExternalInformationSchema(catalogHandle, table.getSchemaName()))
                         .filter(prefix::matches)
                         .forEach(tables::add);
             }
@@ -554,13 +560,21 @@ public final class MetadataManager
 
             SchemaTablePrefix tablePrefix = prefix.asSchemaTablePrefix();
             for (CatalogHandle catalogHandle : catalogMetadata.listCatalogHandles()) {
+                if (isExternalInformationSchema(catalogHandle, prefix.getSchemaName())) {
+                    continue;
+                }
+
                 ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
 
                 ConnectorSession connectorSession = session.toConnectorSession(catalogHandle);
 
                 // Collect column metadata from tables
                 metadata.streamTableColumns(connectorSession, tablePrefix)
-                        .forEachRemaining(columnsMetadata -> tableColumns.put(columnsMetadata.getTable(), columnsMetadata.getColumns()));
+                        .forEachRemaining(columnsMetadata -> {
+                            if (!isExternalInformationSchema(catalogHandle, columnsMetadata.getTable().getSchemaName())) {
+                                tableColumns.put(columnsMetadata.getTable(), columnsMetadata.getColumns());
+                            }
+                        });
 
                 // Collect column metadata from views. if table and view names overlap, the view wins
                 for (Entry<QualifiedObjectName, ViewInfo> entry : getViews(session, prefix).entrySet()) {
@@ -742,6 +756,14 @@ public final class MetadataManager
         CatalogHandle catalogHandle = tableHandle.getCatalogHandle();
         ConnectorMetadata metadata = getMetadataForWrite(session, catalogHandle);
         metadata.dropColumn(session.toConnectorSession(catalogHandle), tableHandle.getConnectorHandle(), column);
+    }
+
+    @Override
+    public void dropField(Session session, TableHandle tableHandle, ColumnHandle column, List<String> fieldPath)
+    {
+        CatalogHandle catalogHandle = tableHandle.getCatalogHandle();
+        ConnectorMetadata metadata = getMetadataForWrite(session, catalogHandle);
+        metadata.dropField(session.toConnectorSession(catalogHandle), tableHandle.getConnectorHandle(), column, fieldPath);
     }
 
     @Override
@@ -1068,10 +1090,14 @@ public final class MetadataManager
             CatalogMetadata catalogMetadata = catalog.get();
 
             for (CatalogHandle catalogHandle : catalogMetadata.listCatalogHandles()) {
+                if (isExternalInformationSchema(catalogHandle, prefix.getSchemaName())) {
+                    continue;
+                }
                 ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
                 ConnectorSession connectorSession = session.toConnectorSession(catalogHandle);
                 metadata.listViews(connectorSession, prefix.getSchemaName()).stream()
                         .map(convertFromSchemaTableName(prefix.getCatalogName()))
+                        .filter(view -> !isExternalInformationSchema(catalogHandle, view.getSchemaName()))
                         .filter(prefix::matches)
                         .forEach(views::add);
             }
@@ -1092,6 +1118,10 @@ public final class MetadataManager
 
             SchemaTablePrefix tablePrefix = prefix.asSchemaTablePrefix();
             for (CatalogHandle catalogHandle : catalogMetadata.listCatalogHandles()) {
+                if (isExternalInformationSchema(catalogHandle, tablePrefix.getSchema())) {
+                    continue;
+                }
+
                 ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
                 ConnectorSession connectorSession = session.toConnectorSession(catalogHandle);
 
@@ -1106,6 +1136,9 @@ public final class MetadataManager
                 }
 
                 for (Entry<SchemaTableName, ConnectorViewDefinition> entry : viewMap.entrySet()) {
+                    if (isExternalInformationSchema(catalogHandle, entry.getKey().getSchemaName())) {
+                        continue;
+                    }
                     QualifiedObjectName viewName = new QualifiedObjectName(
                             prefix.getCatalogName(),
                             entry.getKey().getSchemaName(),
@@ -1128,7 +1161,7 @@ public final class MetadataManager
         ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
 
         ConnectorSession connectorSession = session.toConnectorSession(catalogHandle);
-        return metadata.getSchemaProperties(connectorSession, schemaName);
+        return metadata.getSchemaProperties(connectorSession, schemaName.getSchemaName());
     }
 
     @Override
@@ -1144,7 +1177,7 @@ public final class MetadataManager
         CatalogHandle catalogHandle = catalogMetadata.getConnectorHandleForSchema(schemaName);
         ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
         ConnectorSession connectorSession = session.toConnectorSession(catalogHandle);
-        return metadata.getSchemaOwner(connectorSession, schemaName);
+        return metadata.getSchemaOwner(connectorSession, schemaName.getSchemaName());
     }
 
     @Override
@@ -1291,10 +1324,14 @@ public final class MetadataManager
             CatalogMetadata catalogMetadata = catalog.get();
 
             for (CatalogHandle catalogHandle : catalogMetadata.listCatalogHandles()) {
+                if (isExternalInformationSchema(catalogHandle, prefix.getSchemaName())) {
+                    continue;
+                }
                 ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
                 ConnectorSession connectorSession = session.toConnectorSession(catalogHandle);
                 metadata.listMaterializedViews(connectorSession, prefix.getSchemaName()).stream()
                         .map(convertFromSchemaTableName(prefix.getCatalogName()))
+                        .filter(materializedView -> !isExternalInformationSchema(catalogHandle, materializedView.getSchemaName()))
                         .filter(prefix::matches)
                         .forEach(materializedViews::add);
             }
@@ -1315,6 +1352,9 @@ public final class MetadataManager
 
             SchemaTablePrefix tablePrefix = prefix.asSchemaTablePrefix();
             for (CatalogHandle catalogHandle : catalogMetadata.listCatalogHandles()) {
+                if (isExternalInformationSchema(catalogHandle, tablePrefix.getSchema())) {
+                    continue;
+                }
                 ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
                 ConnectorSession connectorSession = session.toConnectorSession(catalogHandle);
 
@@ -1329,6 +1369,9 @@ public final class MetadataManager
                 }
 
                 for (Entry<SchemaTableName, ConnectorMaterializedViewDefinition> entry : materializedViewMap.entrySet()) {
+                    if (isExternalInformationSchema(catalogHandle, entry.getKey().getSchemaName())) {
+                        continue;
+                    }
                     QualifiedObjectName viewName = new QualifiedObjectName(
                             prefix.getCatalogName(),
                             entry.getKey().getSchemaName(),
@@ -1421,6 +1464,16 @@ public final class MetadataManager
         ConnectorMetadata metadata = catalogMetadata.getMetadata(session);
 
         metadata.setMaterializedViewProperties(session.toConnectorSession(catalogHandle), viewName.asSchemaTableName(), properties);
+    }
+
+    private static boolean isExternalInformationSchema(CatalogHandle catalogHandle, Optional<String> schemaName)
+    {
+        return schemaName.isPresent() && isExternalInformationSchema(catalogHandle, schemaName.get());
+    }
+
+    private static boolean isExternalInformationSchema(CatalogHandle catalogHandle, String schemaName)
+    {
+        return !catalogHandle.getType().isInternal() && "information_schema".equalsIgnoreCase(schemaName);
     }
 
     @Override
@@ -2475,6 +2528,19 @@ public final class MetadataManager
     {
         ConnectorMetadata metadata = getMetadata(session, tableHandle.getCatalogHandle());
         return metadata.supportsReportingWrittenBytes(session.toConnectorSession(tableHandle.getCatalogHandle()), tableHandle.getConnectorHandle());
+    }
+
+    @Override
+    public OptionalInt getMaxWriterTasks(Session session, String catalogName)
+    {
+        Optional<CatalogMetadata> catalog = getOptionalCatalogMetadata(session, catalogName);
+        if (catalog.isEmpty()) {
+            return OptionalInt.empty();
+        }
+
+        CatalogMetadata catalogMetadata = catalog.get();
+        CatalogHandle catalogHandle = catalogMetadata.getCatalogHandle();
+        return catalogMetadata.getMetadata(session).getMaxWriterTasks(session.toConnectorSession(catalogHandle));
     }
 
     private Optional<ConnectorTableVersion> toConnectorVersion(Optional<TableVersion> version)

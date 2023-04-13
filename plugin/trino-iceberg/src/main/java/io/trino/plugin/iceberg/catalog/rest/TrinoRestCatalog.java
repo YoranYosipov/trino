@@ -35,6 +35,7 @@ import io.trino.spi.security.TrinoPrincipal;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.Transaction;
 import org.apache.iceberg.catalog.Namespace;
@@ -55,12 +56,12 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.filesystem.Locations.appendPath;
 import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_CATALOG_ERROR;
 import static io.trino.plugin.iceberg.IcebergUtil.quotedTableName;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.String.format;
-import static java.lang.String.join;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
 
@@ -195,11 +196,13 @@ public class TrinoRestCatalog
             SchemaTableName schemaTableName,
             Schema schema,
             PartitionSpec partitionSpec,
+            SortOrder sortOrder,
             String location,
             Map<String, String> properties)
     {
         return restSessionCatalog.buildTable(convert(session), toIdentifier(schemaTableName), schema)
                 .withPartitionSpec(partitionSpec)
+                .withSortOrder(sortOrder)
                 .withLocation(location)
                 .withProperties(properties)
                 .createTransaction();
@@ -280,7 +283,7 @@ public class TrinoRestCatalog
         if (databaseLocation.endsWith("/")) {
             return databaseLocation + tableName;
         }
-        return join("/", databaseLocation, tableName);
+        return appendPath(databaseLocation, tableName);
     }
 
     private String createLocationForTable(String baseTableName)

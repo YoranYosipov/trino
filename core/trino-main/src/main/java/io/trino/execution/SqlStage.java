@@ -81,7 +81,7 @@ public final class SqlStage
             Session session,
             boolean summarizeTaskInfo,
             NodeTaskMap nodeTaskMap,
-            Executor executor,
+            Executor stateMachineExecutor,
             SplitSchedulerStats schedulerStats)
     {
         requireNonNull(stageId, "stageId is null");
@@ -91,12 +91,12 @@ public final class SqlStage
         requireNonNull(remoteTaskFactory, "remoteTaskFactory is null");
         requireNonNull(session, "session is null");
         requireNonNull(nodeTaskMap, "nodeTaskMap is null");
-        requireNonNull(executor, "executor is null");
+        requireNonNull(stateMachineExecutor, "stateMachineExecutor is null");
         requireNonNull(schedulerStats, "schedulerStats is null");
 
         SqlStage sqlStage = new SqlStage(
                 session,
-                new StageStateMachine(stageId, fragment, tables, executor, schedulerStats),
+                new StageStateMachine(stageId, fragment, tables, stateMachineExecutor, schedulerStats),
                 remoteTaskFactory,
                 nodeTaskMap,
                 summarizeTaskInfo);
@@ -268,16 +268,22 @@ public final class SqlStage
         stateMachine.recordGetSplitTime(start);
     }
 
-    private synchronized void updateTaskStatus(TaskStatus status)
+    private void updateTaskStatus(TaskStatus status)
     {
-        if (status.getState().isDone()) {
-            finishedTasks.add(status.getTaskId());
+        boolean isDone = status.getState().isDone();
+        if (!isDone && stateMachine.getState() == StageState.RUNNING) {
+            return;
         }
-        if (!finishedTasks.containsAll(allTasks)) {
-            stateMachine.transitionToRunning();
-        }
-        else {
-            stateMachine.transitionToPending();
+        synchronized (this) {
+            if (isDone) {
+                finishedTasks.add(status.getTaskId());
+            }
+            if (finishedTasks.size() == allTasks.size()) {
+                stateMachine.transitionToPending();
+            }
+            else {
+                stateMachine.transitionToRunning();
+            }
         }
     }
 
@@ -287,13 +293,18 @@ public final class SqlStage
         checkAllTaskFinal();
     }
 
-    private synchronized void checkAllTaskFinal()
+    private void checkAllTaskFinal()
     {
-        if (stateMachine.getState().isDone() && tasksWithFinalInfo.containsAll(tasks.keySet())) {
-            List<TaskInfo> finalTaskInfos = tasks.values().stream()
-                    .map(RemoteTask::getTaskInfo)
-                    .collect(toImmutableList());
-            stateMachine.setAllTasksFinal(finalTaskInfos);
+        if (!stateMachine.getState().isDone()) {
+            return;
+        }
+        synchronized (this) {
+            if (tasksWithFinalInfo.size() == allTasks.size()) {
+                List<TaskInfo> finalTaskInfos = tasks.values().stream()
+                        .map(RemoteTask::getTaskInfo)
+                        .collect(toImmutableList());
+                stateMachine.setAllTasksFinal(finalTaskInfos);
+            }
         }
     }
 

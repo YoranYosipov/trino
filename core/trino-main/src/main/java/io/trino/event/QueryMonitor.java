@@ -200,6 +200,8 @@ public class QueryMonitor
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
+                        Optional.empty(),
+                        0,
                         0,
                         0,
                         0,
@@ -220,6 +222,7 @@ public class QueryMonitor
                         ImmutableList.of(),
                         0,
                         true,
+                        ImmutableList.of(),
                         ImmutableList.of(),
                         ImmutableList.of(),
                         ImmutableList.of(),
@@ -306,6 +309,7 @@ public class QueryMonitor
                 Optional.of(ofMillis(queryStats.getFailedInputBlockedTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getOutputBlockedTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getFailedOutputBlockedTime().toMillis())),
+                Optional.of(ofMillis(queryStats.getPhysicalInputReadTime().toMillis())),
                 queryStats.getPeakUserMemoryReservation().toBytes(),
                 queryStats.getPeakTaskUserMemory().toBytes(),
                 queryStats.getPeakTaskTotalMemory().toBytes(),
@@ -321,6 +325,7 @@ public class QueryMonitor
                 queryStats.getOutputPositions(),
                 queryStats.getLogicalWrittenDataSize().toBytes(),
                 queryStats.getWrittenPositions(),
+                queryStats.getSpilledDataSize().toBytes(),
                 queryStats.getCumulativeUserMemory(),
                 queryStats.getFailedCumulativeUserMemory(),
                 queryStats.getStageGcStatistics(),
@@ -329,6 +334,7 @@ public class QueryMonitor
                 getCpuDistributions(queryInfo),
                 getStageOutputBufferUtilizations(queryInfo),
                 operatorSummaries.build(),
+                ImmutableList.copyOf(queryInfo.getQueryStats().getOptimizerRulesSummaries()),
                 serializedPlanNodeStatsAndCosts);
     }
 

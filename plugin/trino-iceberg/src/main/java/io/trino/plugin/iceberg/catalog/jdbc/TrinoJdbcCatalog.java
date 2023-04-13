@@ -30,10 +30,10 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.type.TypeManager;
-import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.Transaction;
@@ -50,6 +50,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.Maps.transformValues;
+import static io.trino.filesystem.Locations.appendPath;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_CATALOG_ERROR;
 import static io.trino.plugin.iceberg.IcebergSchemaProperties.LOCATION_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergUtil.getIcebergTableWithMetadata;
@@ -162,17 +163,20 @@ public class TrinoJdbcCatalog
     private List<String> listNamespaces(ConnectorSession session, Optional<String> namespace)
     {
         if (namespace.isPresent() && namespaceExists(session, namespace.get())) {
-            if ("information_schema".equals(namespace.get())) {
-                // TODO https://github.com/trinodb/trino/issues/1559 this should be filtered out in engine.
-                return ImmutableList.of();
-            }
             return ImmutableList.of(namespace.get());
         }
         return listNamespaces(session);
     }
 
     @Override
-    public Transaction newCreateTableTransaction(ConnectorSession session, SchemaTableName schemaTableName, Schema schema, PartitionSpec partitionSpec, String location, Map<String, String> properties)
+    public Transaction newCreateTableTransaction(
+            ConnectorSession session,
+            SchemaTableName schemaTableName,
+            Schema schema,
+            PartitionSpec partitionSpec,
+            SortOrder sortOrder,
+            String location,
+            Map<String, String> properties)
     {
         if (!listNamespaces(session, Optional.of(schemaTableName.getSchemaName())).contains(schemaTableName.getSchemaName())) {
             throw new SchemaNotFoundException(schemaTableName.getSchemaName());
@@ -182,6 +186,7 @@ public class TrinoJdbcCatalog
                 schemaTableName,
                 schema,
                 partitionSpec,
+                sortOrder,
                 location,
                 properties,
                 Optional.of(session.getUser()));
@@ -252,23 +257,16 @@ public class TrinoJdbcCatalog
     {
         Namespace namespace = Namespace.of(schemaTableName.getSchemaName());
         String tableName = createNewTableName(schemaTableName.getTableName());
-        Optional<String> databaseLocation;
-        if (!jdbcCatalog.namespaceExists(namespace)) {
-            databaseLocation = Optional.empty();
-        }
-        else {
+
+        Optional<String> databaseLocation = Optional.empty();
+        if (jdbcCatalog.namespaceExists(namespace)) {
             databaseLocation = Optional.ofNullable(jdbcCatalog.loadNamespaceMetadata(namespace).get(LOCATION_PROPERTY));
         }
 
-        Path location;
-        if (databaseLocation.isEmpty()) {
-            location = new Path(new Path(defaultWarehouseDir, schemaTableName.getSchemaName()), tableName);
-        }
-        else {
-            location = new Path(databaseLocation.get(), tableName);
-        }
+        String schemaLocation = databaseLocation.orElseGet(() ->
+                appendPath(defaultWarehouseDir, schemaTableName.getSchemaName()));
 
-        return location.toString();
+        return appendPath(schemaLocation, tableName);
     }
 
     @Override
